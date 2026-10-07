@@ -8,6 +8,14 @@
 		}
 	}
 
+	# Serve the realm's OIDC discovery document at the root (the issuer stays the realm URL).
+	handle /.well-known/openid-configuration {
+		rewrite * {$KC_HTTP_RELATIVE_PATH:/auth}/realms/{$KEYCLOAK_REALM:sal}/.well-known/openid-configuration
+		reverse_proxy keycloak:8080 {
+			header_up Host {host}
+		}
+	}
+
 	# Host is passed through unchanged, which HTTP Signature checks rely on.
 	handle {
 		reverse_proxy salpub:8000
