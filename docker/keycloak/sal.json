@@ -1,0 +1,90 @@
+{
+    "realm": "sal",
+    "enabled": true,
+    "clients": [
+        {
+            "clientId": "${KEYCLOAK_CLIENT_ID}",
+            "name": "SAL Pub",
+            "enabled": true,
+            "protocol": "openid-connect",
+            "publicClient": false,
+            "clientAuthenticatorType": "client-secret",
+            "secret": "${KEYCLOAK_CLIENT_SECRET}",
+            "standardFlowEnabled": true,
+            "directAccessGrantsEnabled": false,
+            "redirectUris": [
+                "${REDIRECT_URL}"
+            ],
+            "attributes": {
+                "post.logout.redirect.uris": "+"
+            },
+            "webOrigins": [
+                "+"
+            ]
+        }
+    ],
+    "identityProviders": [
+        {
+            "alias": "microsoft",
+            "providerId": "microsoft",
+            "displayName": "Microsoft",
+            "enabled": true,
+            "trustEmail": true,
+            "storeToken": true,
+            "config": {
+                "clientId": "${IDP_MICROSOFT_CLIENT_ID}",
+                "tenantId": "${IDP_MICROSOFT_TENANT_ID}",
+                "clientSecret": "${IDP_MICROSOFT_CLIENT_SECRET}",
+                "guiOrder": "0"
+            }
+        },
+        {
+            "alias": "github",
+            "providerId": "github",
+            "displayName": "GitHub",
+            "enabled": true,
+            "storeToken": true,
+            "trustEmail": true,
+            "firstBrokerLoginFlowAlias": "first broker login",
+            "config": {
+                "clientId": "${IDP_GITHUB_CLIENT_ID}",
+                "clientSecret": "${IDP_GITHUB_CLIENT_SECRET}",
+                "useJwksUrl": "true"
+            }
+        },
+        {
+            "alias": "google",
+            "providerId": "google",
+            "displayName": "Google",
+            "enabled": true,
+            "storeToken": true,
+            "trustEmail": true,
+            "firstBrokerLoginFlowAlias": "first broker login",
+            "config": {
+                "clientId": "${IDP_GOOGLE_CLIENT_ID}",
+                "clientSecret": "${IDP_GOOGLE_CLIENT_SECRET}",
+                "defaultScope": "openid profile email"
+            }
+        },
+        {
+            "alias": "gitlab",
+            "providerId": "oidc",
+            "displayName": "GitLab",
+            "enabled": true,
+            "trustEmail": true,
+            "storeToken": true,
+            "firstBrokerLoginFlowAlias": "first broker login",
+            "config": {
+                "clientId": "${IDP_GITLAB_CLIENT_ID}",
+                "clientSecret": "${IDP_GITLAB_CLIENT_SECRET}",
+                "issuer": "https://gitlab.com",
+                "authorizationUrl": "https://gitlab.com/oauth/authorize",
+                "tokenUrl": "https://gitlab.com/oauth/token",
+                "userinfoUrl": "https://gitlab.com/oauth/userinfo",
+                "jwksUrl": "https://gitlab.com/oauth/discovery/keys",
+                "defaultScope": "openid profile email",
+                "syncMode": "IMPORT"
+            }
+        }
+    ]
+}

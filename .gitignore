@@ -30,3 +30,16 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+docker/keycloak/themes
+
+# macOS
+.DS_Store
+
+# Claude Code (personal, not shared)
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Local/runtime data and scratch files (t.json is a realm export containing secrets)
+t.json
+storage/
+docker/fedbox/storage/
