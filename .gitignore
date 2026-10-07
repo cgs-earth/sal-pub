@@ -42,4 +42,3 @@ CLAUDE.local.md
 # Local/runtime data and scratch files (t.json is a realm export containing secrets)
 t.json
 storage/
-docker/fedbox/storage/

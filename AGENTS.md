@@ -10,50 +10,45 @@ ActivityPub identity (actor, WebFinger, inbox/outbox). Users sign in through Key
 (which brokers Microsoft, GitHub, Google and GitLab logins), and each Keycloak subject
 maps to one ActivityPub actor stored in Postgres.
 
-The project is a **prototype**. Two approaches are being explored side by side:
-
-1. **Custom implementation** in `internal/` and `cmd/server/`: hand-rolled ActivityPub
-   handlers backed by Postgres, with Keycloak OIDC login.
-2. **FedBOX** (`docker-compose-fedbox.yml`): the off-the-shelf go-ap stack
-   (`fedbox`, `point`, `auth`) for comparison.
-
-Don't assume one is canonical. Ask before deleting or consolidating either one.
+The project is a **prototype**: a minimal ActivityPub server in `internal/` and `cmd/server/`,
+backed by Postgres, with Keycloak OIDC login. It uses `go-ap/activitypub` for the vocabulary
+and `go-fed/httpsig` for HTTP Signatures. User-facing docs are in `docs/activitypub-server.md`.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `cmd/server/main.go` | Runnable OIDC login demo (Keycloak → session cookie). Listens on `:8000`. |
-| `main.go` | Older AP entrypoint on `:8080`. **Broken:** it imports `internal/handlers/*`, which doesn't exist. |
-| `internal/activitypub/` | Actor, WebFinger, inbox (stub, 501) and outbox HTTP handlers. Not wired into any `main` yet. |
-| `internal/actor/` | RSA-4096 keypair generation for actor HTTP signatures. |
-| `internal/auth/` | Bearer-token OIDC middleware (`Claims` in request context). |
-| `internal/store/` | Postgres access for the `actors` table (`database/sql` + `lib/pq`). |
+| `cmd/server/main.go` | The server: reads config, opens Postgres, runs migrations, wires `activitypub` + `web` onto one mux. Listens on `:8000`. |
+| `internal/activitypub/` | WebFinger, actor, inbox, outbox, followers/following and note handlers (`server.go`); signed delivery, remote actor/key fetching and inbox processing (`federation.go`). Also provisions an actor on first login (`EnsureActor`). |
+| `internal/httpsig/` | Thin wrapper around `go-fed/httpsig`: `Sign`, `Verify` (plus required-header, Date-skew and Digest checks), RSA key generation and PEM parsing. |
+| `internal/store/` | Postgres access (`database/sql` + `lib/pq`) for `actors`, `notes` and `followers`, plus `Migrate`. |
+| `internal/web/` | Browser side: Keycloak login (state + PKCE), gorilla session cookie, home page, `POST /notes`, `POST /logout` (RP-initiated logout via Keycloak's end-session endpoint). |
 | `pkg/util/` | Small shared helpers (`GetEnv`). |
-| `migrations/` | Plain SQL migrations, numbered `NNN_name.sql`. No migration tool is wired up yet. |
-| `docker/caddy/` | Reverse proxy: `/auth/*` → Keycloak. |
+| `migrations/` | Plain SQL migrations, numbered `NNN_name.sql`, embedded via `migrations.FS` and applied at startup (tracked in `schema_migrations`). |
+| `docs/` | User-facing documentation. |
+| `Dockerfile` | Multi-stage build of `cmd/server` into a distroless image (the `salpub` Compose service). |
+| `docker/caddy/` | Reverse proxy at `SALPUB_HOSTNAME`: `/auth/*` → Keycloak, everything else → `salpub:8000`. |
 | `docker/keycloak/` | Keycloak 26 image plus the `sal` realm import (`sal.json`). |
-| `docker/fedbox/` | FedBOX config (`fedbox.env`, `Caddyfile`). `storage/` holds runtime data, not source. |
+| `docker/postgres/` | Init scripts mounted into `/docker-entrypoint-initdb.d`; creates the `salpub` database on a fresh data directory. |
 
 ## Commands
 
 ```sh
-# Build / check (scope to the packages that compile; the root package is broken)
-go build ./cmd/... ./internal/... ./pkg/...
-go vet   ./cmd/... ./internal/... ./pkg/...
+# Build / check
+go build ./...
+go vet   ./...
 gofmt -l .                      # should print nothing
-go test  ./...                  # no tests exist yet
+go test  ./...
 
-# Local infra: Caddy + Keycloak + Postgres
+# Full stack: Caddy + sal-pub + Keycloak + Postgres, served at $SALPUB_HOSTNAME
 cp .env.default .env            # first time only, then fill in KEYCLOAK_CLIENT_SECRET etc.
 docker compose up -d --build
-docker compose logs -f keycloak
+docker compose up -d --build salpub   # after changing Go code
+docker compose logs -f salpub keycloak
+docker compose exec postgres createdb -U keycloak salpub   # only if Postgres predates docker/postgres/
 
-# Run the OIDC demo app against that stack
-set -a && source .env && set +a && go run ./cmd/server   # http://localhost:8000
-
-# FedBOX experiment (separate stack)
-docker compose -f docker-compose-fedbox.yml up -d
+# Or run the server outside Docker (needs localhost:8000 SALPUB_HOSTNAME/REDIRECT_URL; see docs)
+set -a && source .env && set +a && go run ./cmd/server
 ```
 
 Keycloak admin is at `$SALPUB_HOSTNAME/auth`. Default bootstrap credentials are in `.env.default`.
@@ -64,8 +59,10 @@ All runtime config comes from environment variables, read through `util.GetEnv(k
 `.env.default` is the committed template and `.env` is the local, git-ignored copy. When you add
 a variable, add it to `.env.default` with a safe placeholder value.
 
-Variables the Go code reads: `KC_HOSTNAME`, `KC_HTTP_RELATIVE_PATH`, `KEYCLOAK_REALM`,
-`KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `REDIRECT_URL`, `SESSION_SECRET`.
+Variables the Go code reads: `LISTEN_ADDR`, `DATABASE_URL`, `KC_HOSTNAME`,
+`KC_HTTP_RELATIVE_PATH`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`,
+`REDIRECT_URL`, `SESSION_SECRET`, `OIDC_INSECURE_SKIP_VERIFY`, `OIDC_DISCOVERY_URL`. See `docs/activitypub-server.md`
+for defaults.
 
 `docker/keycloak/sal.json` uses `${VAR}` placeholders, which Keycloak fills from its own
 environment when it imports the realm. Identity-provider credentials come from `IDP_<ALIAS>_CLIENT_ID`
@@ -77,35 +74,60 @@ with a fresh database.
 ## Conventions
 
 - Go 1.25. Use only the standard library plus what's already in `go.mod`. Ask before adding a dependency.
-- Run `gofmt` on every Go file you touch. Some existing files use spaces; fixing that while you're there is fine.
+- Run `gofmt` on every Go file you touch.
 - Wrap errors with context: `fmt.Errorf("verb noun: %w", err)`. Return `store.ErrNotFound` for missing rows.
-- HTTP handlers are constructors that close over their dependencies (`func XHandler(s *store.Store) http.HandlerFunc`).
+- HTTP handlers are methods on a struct that holds their dependencies (`activitypub.Server`,
+  `web.App`), registered with Go 1.22+ method/wildcard patterns in a `Register(mux)` method.
+- Build and parse ActivityStreams documents with `go-ap/activitypub` (imported as `vocab`) and
+  serialize them with `marshal()` in `internal/activitypub`, which adds `@context`. Don't hand-build
+  AP JSON with maps.
 - ActivityPub responses use `Content-Type: application/activity+json`. WebFinger responses use `application/jrd+json`.
 - Schema changes go in a new numbered file in `migrations/`. Never edit a migration that has already been applied.
-- Prefer the standard library over hand-written helpers. For example, `internal/activitypub` has a
-  hand-rolled `stringsSplit` that should just be `strings.Split`.
+- Prefer the standard library or an existing dependency over hand-written helpers.
 
 ## Known issues and gotchas
 
 - **Secrets.** Real IdP client secrets live only in `.env` and in `t.json` (a full realm export).
   Both files are git-ignored. Don't copy secret values into code, docs or commit messages, and don't
   print them in output.
-- `main.go` (root) doesn't compile (see Layout). `go build ./...` fails because of it.
-- `go.mod` marks directly used modules (`go-oidc`, `oauth2`, `gorilla/sessions`, `lib/pq`) as
-  `// indirect`. Run `go mod tidy` once the root package builds.
-- **Development only:** `InsecureSkipVerify: true` is set in both `cmd/server` and `internal/auth`
-  so the stack works with Caddy's local CA. The OAuth `state` is hard-coded, and `SESSION_SECRET`
-  has an insecure fallback. Fix all three before anything is deployed, and don't copy these
-  patterns into new code.
-- The inbox doesn't verify HTTP Signatures yet and deliberately returns 501. Don't accept inbox
-  activities without signature verification.
+- **Inbox security.** Every inbox request must pass `httpsig.Verify`, and the activity's `actor`
+  must equal the signing key's owner. Keep both checks for any new activity types.
+- `OIDC_INSECURE_SKIP_VERIFY=true` disables TLS verification for Keycloak calls only (needed with
+  Caddy's local CA). Never apply it to the federation HTTP client or `http.DefaultTransport`.
+- If `SESSION_SECRET` is empty, a random key is used and sessions end on restart.
+- Federation needs `BASE_URL` reachable over public HTTPS.
+- Caddy routes `/auth/*` to Keycloak, so app routes (including the OAuth callback,
+  `/oauth/callback`) must stay out of `/auth`.
+- In Docker, the public hostname isn't reachable from inside `salpub`. OIDC discovery goes through
+  `OIDC_DISCOVERY_URL`, which relies on Keycloak's `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` and a
+  full-URL `KC_HOSTNAME` that includes `/auth`. Don't remove either setting.
+- No delivery retry queue, and no caching of remote keys.
 - `actors.private_key_pem` is stored in plaintext.
 
 ## Working agreements for agents
 
 - Keep changes small and scoped to the task. Don't reformat or restructure unrelated code.
-- Check that your change builds with the scoped `go build` / `go vet` commands above, and report
+- Check that your change passes the `go build` / `go vet` / `go test` commands above, and report
   the results honestly.
-- Don't run `docker compose down -v`, delete `docker/fedbox/storage/`, or drop database tables
+- Don't run `docker compose down -v` or drop database tables
   without asking first.
 - Commit only when asked. Branch off `main` first.
+
+## Code Style
+- Use testify for writing succinct tests; avoid just the standard library and if statements with t.Error().
+- If a function would only be called from one other function and it is short, try to just condense it into the function that calls it.
+- Any function with functionality that is non trivial should be documented with a succinct comment of what it does.
+- Don't create functions that are very small and only used in a single place.
+- Prefer to not use table oriented tests unless there is significant test duplication; make each test case a separate test function so it is easier to debug and isolate failures.
+- All tests should be unit tests without external fetches to remote servers. All local filesystem operations should be mocked or written to tmp files.
+
+## Boundaries
+Ask First:
+  - Large cross-package refactors.
+  - If some functionality would be very complex, duplicative, and better handled by an underlying library like json-gold or goRDFlib, explicitly call it out; don't try to create a custom fix here with lots of specialized code
+  - If the AGENTS.md file should be updated to reflect new changes, explicitly call it out
+
+## Development
+- go test ./... should pass after every new feature
+- For any major new user facing features, add associated documentation in the /docs folder
+- Use ripgrep via rg instead of grep if it is present to speed up searching through the codebase

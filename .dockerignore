@@ -1,0 +1,7 @@
+.git
+.claude
+.env
+t.json
+docker
+docs
+*.md

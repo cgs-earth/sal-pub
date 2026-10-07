@@ -1,11 +1,15 @@
 {$SALPUB_HOSTNAME} {
-	reverse_proxy /auth/* keycloak:8080 {
-		header_up Host {host}
-		header_up X-Forwarded-Host {host}
-		header_up X-Forwarded-For {remote_host}
+	# Keycloak lives under /auth; everything else is the sal-pub server.
+	handle /auth/* {
+		reverse_proxy keycloak:8080 {
+			header_up Host {host}
+			header_up X-Forwarded-Host {host}
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 
-	redir /login /auth/realms/sal/account
-
-
+	# Host is passed through unchanged, which HTTP Signature checks rely on.
+	handle {
+		reverse_proxy salpub:8000
+	}
 }

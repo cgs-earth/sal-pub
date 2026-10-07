@@ -9,21 +9,55 @@ services:
       - "443:443"
     depends_on:
       - keycloak
+      - salpub
+  salpub:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      # Container-specific overrides; the rest comes from .env.
+      LISTEN_ADDR: ":8000"
+      DATABASE_URL: postgres://${KC_DB_USERNAME}:${KC_DB_PASSWORD}@postgres:5432/salpub?sslmode=disable
+      # The public Keycloak URL resolves to this container, so discover Keycloak internally.
+      OIDC_DISCOVERY_URL: http://keycloak:8080${KC_HTTP_RELATIVE_PATH}/realms/${KEYCLOAK_REALM:-sal}
+    depends_on:
+      keycloak: 
+        condition: service_healthy
+    # Exits if Keycloak or Postgres isn't up yet; restart until they are.
+    restart: unless-stopped
   keycloak:
     build:
       context: docker/keycloak
     env_file:
       - .env
     depends_on:
-      - postgres
+      postgres: 
+        condition: service_healthy
     volumes:
       - ./docker/keycloak/themes/sal:/opt/keycloak/themes/sal
+    healthcheck:
+      # The Keycloak image has no curl/wget, so open a TCP connection with bash.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/0.0.0.0/8080"]
+      start_period: 5s
+      interval: 10s
+      timeout: 5s
+      retries: 5
   postgres:
     image: postgres:17
     env_file:
       - .env
     ports:
       - "5432:5432"
+    volumes:
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KC_DB_USERNAME} -d salpub"]
+      start_period: 15s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 #     volumes:
 #       - postgres_data:/var/lib/postgresql/data
 # volumes:

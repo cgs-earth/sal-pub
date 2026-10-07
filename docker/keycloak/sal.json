@@ -4,19 +4,24 @@
     "clients": [
         {
             "clientId": "${KEYCLOAK_CLIENT_ID}",
-            "name": "SAL Pub",
+            "name": "sal-pub",
             "enabled": true,
+            "baseUrl": "${SALPUB_HOSTNAME}",
             "protocol": "openid-connect",
-            "publicClient": false,
-            "clientAuthenticatorType": "client-secret",
+            "publicClient": true,
             "secret": "${KEYCLOAK_CLIENT_SECRET}",
             "standardFlowEnabled": true,
             "directAccessGrantsEnabled": false,
             "redirectUris": [
-                "${REDIRECT_URL}"
+                "${SALPUB_HOSTNAME}*",
+                "${SALPUB_HOSTNAME}/oauth/callback"
             ],
             "attributes": {
-                "post.logout.redirect.uris": "+"
+                "post.logout.redirect.uris": "+",
+                "pkce.code.challenge.method": "S256",
+                "oauth2.device.authorization.grant.enabled": "true",
+                "oauth2.device.code.lifespan": "600",
+                "oauth2.device.polling.interval": "5"
             },
             "webOrigins": [
                 "+"
@@ -29,8 +34,8 @@
             "providerId": "microsoft",
             "displayName": "Microsoft",
             "enabled": true,
-            "trustEmail": true,
             "storeToken": true,
+            "trustEmail": true,
             "config": {
                 "clientId": "${IDP_MICROSOFT_CLIENT_ID}",
                 "tenantId": "${IDP_MICROSOFT_TENANT_ID}",
@@ -45,6 +50,7 @@
             "enabled": true,
             "storeToken": true,
             "trustEmail": true,
+            "linkOnly": true,
             "firstBrokerLoginFlowAlias": "first broker login",
             "config": {
                 "clientId": "${IDP_GITHUB_CLIENT_ID}",
@@ -59,6 +65,7 @@
             "enabled": true,
             "storeToken": true,
             "trustEmail": true,
+            "linkOnly": true,
             "firstBrokerLoginFlowAlias": "first broker login",
             "config": {
                 "clientId": "${IDP_GOOGLE_CLIENT_ID}",
@@ -71,8 +78,9 @@
             "providerId": "oidc",
             "displayName": "GitLab",
             "enabled": true,
-            "trustEmail": true,
             "storeToken": true,
+            "trustEmail": true,
+            "linkOnly": true,
             "firstBrokerLoginFlowAlias": "first broker login",
             "config": {
                 "clientId": "${IDP_GITLAB_CLIENT_ID}",
