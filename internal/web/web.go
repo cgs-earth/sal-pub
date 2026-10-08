@@ -5,6 +5,7 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"embed"
 	"errors"
 	"fmt"
 	"html"
@@ -116,6 +117,7 @@ func (a *App) Register(mux *http.ServeMux) {
 	csrf := http.NewCrossOriginProtection()
 
 	mux.HandleFunc("GET /{$}", a.home)
+	mux.Handle("GET /static/", http.FileServerFS(staticFS))
 	mux.HandleFunc("GET /login", a.login)
 	mux.HandleFunc("GET "+a.callback, a.oauthCallback)
 	mux.Handle("POST /logout", csrf.Handler(http.HandlerFunc(a.logout)))
@@ -331,7 +333,7 @@ func (a *App) postNote(w http.ResponseWriter, r *http.Request) {
 		util.ServerError(w, err)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/#notes", http.StatusSeeOther)
 }
 
 // requireActor wraps a handler that needs the logged-in user's actor,
@@ -397,7 +399,7 @@ func (a *App) follow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("could not follow %s: %v", target, err), http.StatusBadGateway)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/#following", http.StatusSeeOther)
 }
 
 func (a *App) unfollow(w http.ResponseWriter, r *http.Request) {
@@ -415,109 +417,47 @@ func (a *App) unfollow(w http.ResponseWriter, r *http.Request) {
 		util.ServerError(w, err)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/#following", http.StatusSeeOther)
 }
 
 var htmlTag = regexp.MustCompile(`<[^>]*>`)
 
-// Note content is HTML that activitypub.PublishNote built from escaped text.
-// Inbox notes come from other servers, so they are only shown as plain text:
-// tags are stripped and the result is escaped by html/template as usual.
-var homeTemplate = template.Must(template.New("home").Funcs(template.FuncMap{
-	"noteHTML":  func(s string) template.HTML { return template.HTML(s) }, //nolint:gosec // escaped at write time
-	"plainText": func(s string) string { return html.UnescapeString(htmlTag.ReplaceAllString(s, " ")) },
-}).Parse(`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sal-pub</title>
-<style>
-  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-  textarea, input[type=text] { width: 100%; box-sizing: border-box; font: inherit; }
-  label { display: block; margin-top: .5rem; }
-  .note { border-top: 1px solid #ddd; padding: .5rem 0; }
-  .meta { color: #666; font-size: .875rem; }
-  code { word-break: break-all; }
-</style>
-</head>
-<body>
-<h1>sal-pub</h1>
-{{if not .Actor}}
-  <p>Sign in to get an ActivityPub identity that other fediverse servers can follow.</p>
-  <p><a href="/login">Log in with Keycloak</a></p>
-  <h2>Public posts</h2>
-  {{range .PublicNotes}}
-    <div class="note">
-      <div class="meta"><a href="{{.ActorURI}}"><strong>{{or .DisplayName .Username}}</strong></a>
-        · <a href="/notes/{{.ID}}">{{.Published.Format "2006-01-02 15:04 MST"}}</a></div>
-      <div>{{noteHTML .Content}}</div>
-    </div>
-  {{else}}
-    <p class="meta">No public posts yet.</p>
-  {{end}}
-{{else}}
-  <p>Signed in as <strong>{{or .Actor.DisplayName .Actor.Username}}</strong>.
-     Your fediverse handle is <strong>{{.Handle}}</strong>.</p>
-  <p class="meta">Actor: <a href="{{.Actor.ActorURI}}"><code>{{.Actor.ActorURI}}</code></a><br>
-     {{.NoteCount}} notes · {{len .Followers}} followers</p>
-  <form method="post" action="/logout"><button>Log out</button></form>
+// address is one entry in a note's to/cc list as shown on the page.
+type address struct {
+	Label string
+	Pill  bool // shown as a pill: the public collection or the user's followers
+}
 
-  <h2>New note</h2>
-  <form method="post" action="/notes">
-    <label>To <input type="text" name="to" value="{{.DefaultTo}}"></label>
-    <label>CC <input type="text" name="cc" value="{{.DefaultCC}}"></label>
-    <p class="meta">Actor or collection URLs, separated by spaces or commas. Use <code>public</code> for
-       everyone and <code>{{.DefaultCC}}</code> for your followers. Notes not addressed to
-       <code>public</code> are delivered only to their recipients and hidden from your outbox.</p>
-    <textarea name="content" rows="4" maxlength="{{.MaxNoteChars}}" required></textarea>
-    <p><button>Publish</button></p>
-  </form>
+var (
+	//go:embed templates
+	templateFS embed.FS
+	//go:embed static
+	staticFS embed.FS
 
-  <h2>Following</h2>
-  <form method="post" action="/follow" class="field">
-    <input type="text" name="target" placeholder="@user@example.org or actor URL" required>
-    <button>Follow</button>
-  </form>
-  {{if .Following}}
-  <ul>{{range .Following}}
-    <li><a href="{{.TargetURI}}">{{.TargetURI}}</a>
-      {{if not .Accepted}}<span class="pill">pending</span>{{end}}
-      <form method="post" action="/unfollow" style="display:inline">
-        <input type="hidden" name="target" value="{{.TargetURI}}"><button>Unfollow</button>
-      </form></li>
-  {{end}}</ul>
-  {{end}}
-
-  {{if .Followers}}
-  <h2>Followers</h2>
-  <ul>{{range .Followers}}<li><a href="{{.}}">{{.}}</a></li>{{end}}</ul>
-  {{end}}
-
-  <h2>Inbox</h2>
-  {{range .Inbox}}
-    <div class="note">
-      <div class="meta"><a href="{{.AttributedTo}}">{{.AttributedTo}}</a>
-        · <a href="{{.ObjectID}}">{{.Published.Format "2006-01-02 15:04 MST"}}</a></div>
-      <div>{{plainText .Content}}</div>
-    </div>
-  {{else}}
-    <p class="meta">Nothing yet. Posts from accounts you follow, and posts addressed to you, show up here.</p>
-  {{end}}
-
-  <h2>Your notes</h2>
-  {{range .Notes}}
-    <div class="note">
-      <div class="meta"><a href="/notes/{{.ID}}">{{.Published.Format "2006-01-02 15:04 MST"}}</a>
-        · to: {{range $i, $a := .To}}{{if $i}}, {{end}}{{$a}}{{else}}—{{end}}
-        {{with .CC}}· cc: {{range $i, $a := .}}{{if $i}}, {{end}}{{$a}}{{end}}{{end}}</div>
-      <div>{{noteHTML .Content}}</div>
-    </div>
-  {{else}}
-    <p class="meta">Nothing yet.</p>
-  {{end}}
-{{end}}
-
-</body>
-</html>
-`))
+	// homeTemplate renders templates/home.html, with the partials it uses.
+	//   - noteHTML: note content that activitypub.PublishNote built from
+	//     escaped text, so it is safe to render as HTML.
+	//   - plainText: inbox notes come from other servers, so they are only
+	//     shown as plain text: tags are stripped and the result is escaped
+	//     by html/template as usual.
+	//   - addresses: labels a to/cc list, naming the public collection and the
+	//     user's followers collection.
+	homeTemplate = template.Must(template.New("home.html").Funcs(template.FuncMap{
+		"noteHTML":  func(s string) template.HTML { return template.HTML(s) }, //nolint:gosec // escaped at write time
+		"plainText": func(s string) string { return html.UnescapeString(htmlTag.ReplaceAllString(s, " ")) },
+		"addresses": func(addrs []string, followersURI string) []address {
+			out := make([]address, 0, len(addrs))
+			for _, a := range addrs {
+				switch a {
+				case store.PublicAddress:
+					out = append(out, address{"public", true})
+				case followersURI:
+					out = append(out, address{"followers", true})
+				default:
+					out = append(out, address{a, false})
+				}
+			}
+			return out
+		},
+	}).ParseFS(templateFS, "templates/*.html", "templates/partials/*.html"))
+)

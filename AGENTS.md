@@ -23,7 +23,7 @@ and `go-fed/httpsig` for HTTP Signatures. User-facing docs are in `docs/activity
 | `internal/activitypub/` | WebFinger, actor, inbox, outbox, followers/following and note handlers, note addressing (`ParseAddresses`) (`server.go`); signed delivery to addressed recipients, WebFinger handle resolution, remote actor/key fetching and inbox processing (`federation.go`); follow state as collections in the object store, with `Follow`/`Unfollow` and actor caching (`follows.go`); HTTP CRUD for generic objects (`objects.go`). Also provisions an actor on first login (`EnsureActor`). |
 | `internal/httpsig/` | Thin wrapper around `go-fed/httpsig`: `Sign`, `Verify` (plus required-header, Date-skew and Digest checks), RSA key generation and PEM parsing. |
 | `internal/store/` | Postgres access (`database/sql` + `lib/pq`) for `actors`, `notes` (with `to`/`cc` arrays), `followers`, `following` and `inbox_notes`, plus `Migrate` (`store.go`). Generic CRUD for any ActivityPub object and collection membership, behind the `Objects` and `Collections` interfaces (`objects.go`, tables `objects` and `collection_items`). |
-| `internal/web/` | Browser side: Keycloak login (state + PKCE), gorilla session cookie, home page, `POST /notes`, `POST /logout` (RP-initiated logout via Keycloak's end-session endpoint). |
+| `internal/web/` | Browser side: Keycloak login (state + PKCE), gorilla session cookie, home page, `POST /notes`, `POST /logout` (RP-initiated logout via Keycloak's end-session endpoint). HTML lives in `templates/` (`home.html` plus `partials/`), CSS/JS in `static/` (served at `/static/`); both are embedded with `//go:embed`, so rebuild after editing them. |
 | `pkg/util/` | Shared helpers: `GetEnv`, `WithScheme`, and the HTTP helpers `ServerError` and `LogRequests`. |
 | `migrations/` | Plain SQL migrations, numbered `NNN_name.sql`, embedded via `migrations.FS` and applied at startup (tracked in `schema_migrations`). |
 | `docs/` | User-facing documentation. |
@@ -96,6 +96,8 @@ with a fresh database.
   2026-10-08: databases from before then had their old tables dropped and their `schema_migrations`
   rows for `002`–`006` deleted, so `001_init.sql` must stay as it is.
 - Major user-facing features get documentation in `docs/`.
+- Page markup goes in `internal/web/templates/`, not Go strings. Remote content must go through
+  `plainText`, never `noteHTML`.
 
 ## Code style
 

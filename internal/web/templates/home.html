@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sal-pub</title>
+<link rel="stylesheet" href="/static/app.css">
+{{if .Actor}}<script src="/static/app.js" defer></script>{{end}}
+</head>
+<body>
+<main>
+<header>
+  <h1>sal-pub</h1>
+  {{if .Actor}}
+    <div class="who"><strong>{{or .Actor.DisplayName .Actor.Username}}</strong> · {{.Handle}}</div>
+    <button class="primary" type="button" id="compose-open">New note</button>
+    <form method="post" action="/logout"><button>Log out</button></form>
+  {{else}}
+    <div class="who"></div>
+    <a class="button primary" href="/login">Log in</a>
+  {{end}}
+</header>
+
+{{if not .Actor}}
+  <p class="intro">Sign in with Keycloak to get an ActivityPub identity that other fediverse servers can follow.</p>
+  <h2>Public posts</h2>
+  {{template "public-notes" .}}
+{{else}}
+  <div role="tablist" aria-label="Sections">
+    <button role="tab" id="tab-public" aria-controls="public">Public</button>
+    <button role="tab" id="tab-inbox" aria-controls="inbox">Inbox</button>
+    <button role="tab" id="tab-notes" aria-controls="notes">Outbox <span class="count">{{.NoteCount}}</span></button>
+    <button role="tab" id="tab-following" aria-controls="following">Following <span class="count">{{len .Following}}</span></button>
+    <button role="tab" id="tab-followers" aria-controls="followers">Followers <span class="count">{{len .Followers}}</span></button>
+  </div>
+
+  <section role="tabpanel" id="inbox" aria-labelledby="tab-inbox">
+    {{range .Inbox}}
+      <article class="card">
+        <div class="meta"><a href="{{.AttributedTo}}">{{.AttributedTo}}</a></div>
+        {{/* Remote HTML: plain text only, never noteHTML. */}}
+        <div>{{plainText .Content}}</div>
+        <footer><a href="{{.ObjectID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a></footer>
+      </article>
+    {{else}}
+      <p class="empty">Nothing yet. Posts from accounts you follow, and posts addressed to you, show up here.</p>
+    {{end}}
+  </section>
+
+  <section role="tabpanel" id="notes" aria-labelledby="tab-notes">
+    {{range .Notes}}
+      <article class="card">
+        <div class="meta">to {{template "addresses" addresses .To $.DefaultCC}}
+          {{with .CC}}· cc {{template "addresses" addresses . $.DefaultCC}}{{end}}</div>
+        <div>{{noteHTML .Content}}</div>
+        <footer><a href="/notes/{{.ID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a></footer>
+      </article>
+    {{else}}
+      <p class="empty">You haven't posted yet. Use <strong>New note</strong> to write one.</p>
+    {{end}}
+  </section>
+
+  <section role="tabpanel" id="public" aria-labelledby="tab-public">
+    {{template "public-notes" .}}
+  </section>
+
+  <section role="tabpanel" id="following" aria-labelledby="tab-following">
+    <form method="post" action="/follow" class="row card">
+      <input type="text" name="target" placeholder="@user@example.org or actor URL" aria-label="Account to follow" required>
+      <button class="primary">Follow</button>
+    </form>
+    {{if .Following}}
+      <ul class="people card">{{range .Following}}
+        <li><span><a class="uri" href="{{.TargetURI}}">{{.TargetURI}}</a>{{if not .Accepted}} <span class="pill warn">pending</span>{{end}}</span>
+          <form method="post" action="/unfollow"><input type="hidden" name="target" value="{{.TargetURI}}"><button class="small">Unfollow</button></form></li>
+      {{end}}</ul>
+    {{else}}
+      <p class="empty">You don't follow anyone yet.</p>
+    {{end}}
+  </section>
+
+  <section role="tabpanel" id="followers" aria-labelledby="tab-followers">
+    {{if .Followers}}
+      <ul class="people card">{{range .Followers}}<li><a class="uri" href="{{.}}">{{.}}</a></li>{{end}}</ul>
+    {{else}}
+      <p class="empty">No followers yet. Share your handle, <strong>{{.Handle}}</strong>.</p>
+    {{end}}
+  </section>
+
+  {{template "compose" .}}
+{{end}}
+</main>
+</body>
+</html>

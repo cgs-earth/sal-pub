@@ -1,0 +1,15 @@
+{{/* The most recent public notes from all users. Expects the page data. */}}
+{{define "public-notes"}}
+  {{range .PublicNotes}}
+    <article class="card">
+      <div class="meta"><a href="{{.ActorURI}}"><strong>{{or .DisplayName .Username}}</strong></a></div>
+      <div>{{noteHTML .Content}}</div>
+      <footer><a href="/notes/{{.ID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a></footer>
+    </article>
+  {{else}}
+    <p class="empty">No public posts yet.</p>
+  {{end}}
+{{end}}
+
+{{/* A note's to or cc list. Expects the result of the addresses func. */}}
+{{define "addresses"}}{{range .}}{{if .Pill}}<span class="pill">{{.Label}}</span>{{else}}{{.Label}}{{end}} {{else}}—{{end}}{{end}}
