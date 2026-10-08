@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	vocab "github.com/go-ap/activitypub"
 	"github.com/go-ap/jsonld"
@@ -57,6 +59,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /users/{username}/outbox", s.outbox)
 	mux.HandleFunc("GET /users/{username}/followers", s.followers)
 	mux.HandleFunc("GET /users/{username}/following", s.following)
+	mux.HandleFunc("GET /notes", s.publicNotes)
 	mux.HandleFunc("GET /notes/{id}", s.note)
 }
 
@@ -133,9 +136,10 @@ func sanitizeUsername(name string) string {
 	return name
 }
 
-// PublishNote stores a public note and delivers it to the actor's followers.
-func (s *Server) PublishNote(ctx context.Context, a *store.Actor, text string) (*store.Note, error) {
-	n, err := s.store.CreateNote(ctx, a.ID, textToHTML(text))
+// PublishNote stores a note addressed to the given to/cc IRIs and delivers it
+// to their inboxes.
+func (s *Server) PublishNote(ctx context.Context, a *store.Actor, text string, to, cc []string) (*store.Note, error) {
+	n, err := s.store.CreateNote(ctx, a.ID, textToHTML(text), to, cc)
 	if err != nil {
 		return nil, err
 	}
@@ -144,8 +148,32 @@ func (s *Server) PublishNote(ctx context.Context, a *store.Actor, text string) (
 	if err != nil {
 		return nil, fmt.Errorf("encode Create: %w", err)
 	}
-	go s.deliverToFollowers(a, payload)
+	go s.deliverNote(a, n, payload)
 	return n, nil
+}
+
+// ParseAddresses splits a comma- or space-separated list of recipients into
+// absolute http(s) IRIs, dropping duplicates. "public" and "as:Public" are
+// accepted as shorthand for the public collection.
+func ParseAddresses(field string) ([]string, error) {
+	var out []string
+	for _, f := range strings.FieldsFunc(field, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+		if strings.EqualFold(f, "public") || f == "as:Public" {
+			f = store.PublicAddress
+		}
+		if u, err := url.Parse(f); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return nil, fmt.Errorf("invalid address %q: must be an http(s) URL or \"public\"", f)
+		}
+		if !slices.Contains(out, f) {
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// FollowersURI returns the IRI of an actor's followers collection.
+func FollowersURI(a *store.Actor) string {
+	return a.ActorURI + "/followers"
 }
 
 func textToHTML(text string) string {
@@ -191,8 +219,12 @@ func (s *Server) noteObject(a *store.Actor, n *store.Note) *vocab.Note {
 	note.AttributedTo = vocab.IRI(a.ActorURI)
 	note.Content = vocab.DefaultNaturalLanguage(n.Content)
 	note.Published = n.Published.UTC().Truncate(time.Second)
-	note.To = vocab.ItemCollection{vocab.PublicNS}
-	note.CC = vocab.ItemCollection{vocab.IRI(a.ActorURI).AddPath("followers")}
+	for _, iri := range n.To {
+		note.To = append(note.To, vocab.IRI(iri))
+	}
+	for _, iri := range n.CC {
+		note.CC = append(note.CC, vocab.IRI(iri))
+	}
 	return note
 }
 
@@ -275,7 +307,8 @@ func (s *Server) outbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	notes, total, err := s.store.ListNotes(r.Context(), a.ID, outboxLimit)
+	// Fetches aren't authenticated, so only public notes are listed.
+	notes, total, err := s.store.ListNotes(r.Context(), a.ID, outboxLimit, true)
 	if err != nil {
 		util.ServerError(w, err)
 		return
@@ -292,7 +325,7 @@ func (s *Server) followers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	followers, err := s.store.Followers(r.Context(), a.ID)
+	followers, err := s.Followers(r.Context(), a)
 	if err != nil {
 		util.ServerError(w, err)
 		return
@@ -304,13 +337,56 @@ func (s *Server) followers(w http.ResponseWriter, r *http.Request) {
 	writeAP(w, orderedCollection(vocab.IRI(a.ActorURI).AddPath("followers"), len(items), items))
 }
 
-// following is always empty: local actors can't follow anyone yet.
+// following lists the actors a local actor follows (accepted follows only).
 func (s *Server) following(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.lookupActor(w, r, r.PathValue("username"))
 	if !ok {
 		return
 	}
-	writeAP(w, orderedCollection(vocab.IRI(a.ActorURI).AddPath("following"), 0, nil))
+	following, err := collect(s.store.CollectionItems(r.Context(), FollowingURI(a)))
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	items := make(vocab.ItemCollection, 0, len(following))
+	for _, f := range following {
+		items = append(items, vocab.IRI(f))
+	}
+	writeAP(w, orderedCollection(vocab.IRI(a.ActorURI).AddPath("following"), len(items), items))
+}
+
+// ServeInbox writes the notes delivered to a's inbox, newest first, as an
+// OrderedCollection. The caller must have checked that the request is from a.
+func (s *Server) ServeInbox(w http.ResponseWriter, r *http.Request, a *store.Actor) {
+	notes, err := s.store.ListInboxNotes(r.Context(), a.ID, outboxLimit)
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	items := make(vocab.ItemCollection, 0, len(notes))
+	for _, n := range notes {
+		note := vocab.ObjectNew(vocab.NoteType)
+		note.ID = vocab.IRI(n.ObjectID)
+		note.AttributedTo = vocab.IRI(n.AttributedTo)
+		note.Content = vocab.DefaultNaturalLanguage(n.Content)
+		note.Published = n.Published.UTC().Truncate(time.Second)
+		items = append(items, note)
+	}
+	writeAP(w, orderedCollection(vocab.IRI(a.ActorURI).AddPath("inbox"), len(items), items))
+}
+
+// publicNotes lists the most recent public notes from all local actors.
+func (s *Server) publicNotes(w http.ResponseWriter, r *http.Request) {
+	notes, err := s.store.ListPublicNotes(r.Context(), outboxLimit)
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	items := make(vocab.ItemCollection, 0, len(notes))
+	for i := range notes {
+		items = append(items, s.noteObject(&store.Actor{ActorURI: notes[i].ActorURI}, &notes[i].Note))
+	}
+	writeAP(w, orderedCollection(vocab.IRI(s.baseURL+"/notes"), len(items), items))
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -322,7 +398,9 @@ func (s *Server) note(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n, a, err := s.store.GetNote(r.Context(), id)
-	if errors.Is(err, store.ErrNotFound) {
+	// Fetches aren't authenticated, so non-public notes are hidden.
+	if errors.Is(err, store.ErrNotFound) ||
+		(err == nil && !slices.Contains(n.To, store.PublicAddress) && !slices.Contains(n.CC, store.PublicAddress)) {
 		http.NotFound(w, r)
 		return
 	}

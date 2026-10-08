@@ -16,23 +16,30 @@ import (
 	"github.com/cgs-earth/sal-pub/pkg/util"
 )
 
+// Fixed by the Docker setup: Caddy serves Keycloak under /auth, the realm
+// import (docker/keycloak/sal.json) creates the sal realm and sal-pub client,
+// and Compose names the Keycloak service "keycloak".
+const (
+	listenAddr          = ":8000"
+	realmPath           = "/auth/realms/sal"
+	keycloakInternalURL = "http://keycloak:8080"
+	clientID            = "sal-pub"
+)
+
 func main() {
 	ctx := context.Background()
 
 	// Public URL of this server. Actor IDs are built from it, so it must be
 	// what remote servers use to reach us, and it shouldn't change later.
-	baseURL := util.WithScheme(util.GetEnv("SALPUB_HOSTNAME", "http://localhost:8000"))
-	listenAddr := util.GetEnv("LISTEN_ADDR", ":8000")
+	baseURL := strings.TrimRight(util.WithScheme(util.GetEnv("SALPUB_HOSTNAME", "http://localhost:8000")), "/")
 	databaseURL := util.GetEnv("DATABASE_URL",
 		"postgres://keycloak:keycloak@localhost:5432/salpub?sslmode=disable")
 
-	// KC_HOSTNAME is either a bare host ("localhost") or a full URL, which
-	// Keycloak requires to include the relative path ("https://localhost/auth").
-	keycloakURL := util.WithScheme(util.GetEnv("KC_HOSTNAME", "http://localhost"))
-	if relativePath := util.GetEnv("KC_HTTP_RELATIVE_PATH", "/auth"); !strings.HasSuffix(keycloakURL, relativePath) {
-		keycloakURL += relativePath
-	}
-	issuer := keycloakURL + "/realms/" + util.GetEnv("KEYCLOAK_REALM", "sal")
+	// Browsers reach Keycloak through Caddy at the public URL, but that isn't
+	// reachable from inside the container, so the server fetches discovery
+	// from the keycloak service. Tokens are still checked against the public
+	// issuer.
+	issuer := baseURL + realmPath
 
 	sessionSecret := []byte(util.GetEnv("SESSION_SECRET", ""))
 	if len(sessionSecret) == 0 {
@@ -58,14 +65,13 @@ func main() {
 	log.Printf("Using Keycloak issuer: %s", issuer)
 	app, err := web.New(ctx, web.Config{
 		Issuer:                issuer,
-		DiscoveryURL:          util.GetEnv("OIDC_DISCOVERY_URL", ""),
-		ClientID:              util.GetEnv("KEYCLOAK_CLIENT_ID", "sal-pub"),
+		DiscoveryURL:          keycloakInternalURL + realmPath,
+		ClientID:              clientID,
 		ClientSecret:          util.GetEnv("KEYCLOAK_CLIENT_SECRET", ""),
-		RedirectURL:           util.WithScheme(util.GetEnv("REDIRECT_URL", baseURL+"/oauth/callback")),
+		RedirectURL:           baseURL + "/oauth/callback",
 		SessionSecret:         sessionSecret,
 		SecureCookies:         strings.HasPrefix(baseURL, "https://"),
-		PostLogoutRedirectURL: strings.TrimRight(baseURL, "/") + "/",
-		InsecureSkipVerify:    util.GetEnv("OIDC_INSECURE_SKIP_VERIFY", "") == "true",
+		PostLogoutRedirectURL: baseURL + "/",
 	}, st, ap)
 	if err != nil {
 		log.Fatal(err)

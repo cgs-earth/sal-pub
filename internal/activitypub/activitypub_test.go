@@ -1,9 +1,13 @@
 package activitypub
 
 import (
+	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
+
+	vocab "github.com/go-ap/activitypub"
 
 	"github.com/cgs-earth/sal-pub/internal/store"
 )
@@ -91,7 +95,10 @@ func TestActorDocumentHasMastodonFields(t *testing.T) {
 }
 
 func TestCreateActivityWrapsPublicNote(t *testing.T) {
-	note := &store.Note{ID: "5bd2beed-0580-4b44-8189-cf80b71d7746", Content: "<p>hi</p>", Published: time.Now()}
+	note := &store.Note{
+		ID: "5bd2beed-0580-4b44-8189-cf80b71d7746", Content: "<p>hi</p>", Published: time.Now(),
+		To: []string{store.PublicAddress}, CC: []string{"https://sal.example/users/alice/followers"},
+	}
 	doc := marshalToMap(t, note)
 
 	if doc["type"] != "Create" || doc["actor"] != "https://sal.example/users/alice" {
@@ -104,5 +111,90 @@ func TestCreateActivityWrapsPublicNote(t *testing.T) {
 	to, _ := obj["to"].([]any)
 	if len(to) != 1 || to[0] != "https://www.w3.org/ns/activitystreams#Public" {
 		t.Errorf("to = %v", obj["to"])
+	}
+	cc, _ := doc["cc"].([]any)
+	if len(cc) != 1 || cc[0] != "https://sal.example/users/alice/followers" {
+		t.Errorf("activity cc = %v", doc["cc"])
+	}
+}
+
+func TestParseAddressesPublicShorthandAndDedupe(t *testing.T) {
+	got, err := ParseAddresses("public, https://remote.example/users/bob\nas:Public https://remote.example/users/bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{store.PublicAddress, "https://remote.example/users/bob"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestParseAddressesEmpty(t *testing.T) {
+	got, err := ParseAddresses("  ,  ")
+	if err != nil || len(got) != 0 {
+		t.Errorf("got %q, %v; want no addresses", got, err)
+	}
+}
+
+func TestParseAddressesRejectsHandle(t *testing.T) {
+	if _, err := ParseAddresses("@bob@remote.example"); err == nil {
+		t.Error("expected an error for a bare handle")
+	}
+}
+
+func TestResolveActorURILocalHandle(t *testing.T) {
+	s, _ := New(nil, "https://sal.example")
+	got, err := s.resolveActorURI(context.Background(), "@Bob@sal.example")
+	if err != nil || got != "https://sal.example/users/bob" {
+		t.Errorf("got %q, %v", got, err)
+	}
+}
+
+func TestResolveActorURIPassesURLThrough(t *testing.T) {
+	s, _ := New(nil, "https://sal.example")
+	got, err := s.resolveActorURI(context.Background(), " https://remote.example/users/bob ")
+	if err != nil || got != "https://remote.example/users/bob" {
+		t.Errorf("got %q, %v", got, err)
+	}
+}
+
+func TestResolveActorURIRejectsBareName(t *testing.T) {
+	s, _ := New(nil, "https://sal.example")
+	if _, err := s.resolveActorURI(context.Background(), "bob"); err == nil {
+		t.Error("expected an error for a name without a host")
+	}
+}
+
+func remoteCreate(noteID, attributedTo string) *vocab.Create {
+	note := vocab.ObjectNew(vocab.NoteType)
+	note.ID = vocab.IRI(noteID)
+	note.AttributedTo = vocab.IRI(attributedTo)
+	note.Content = vocab.DefaultNaturalLanguage("<p>hi</p>")
+	create := vocab.CreateNew(vocab.IRI(noteID+"#create"), note)
+	create.Actor = vocab.IRI(attributedTo)
+	return create
+}
+
+func TestReceiveNoteRejectsBareIRI(t *testing.T) {
+	s, _ := New(nil, "https://sal.example")
+	create := vocab.CreateNew("https://remote.example/notes/1#create", vocab.IRI("https://remote.example/notes/1"))
+	if err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create); err == nil {
+		t.Error("expected an error for a non-embedded object")
+	}
+}
+
+func TestReceiveNoteRejectsNoteAttributedToSomeoneElse(t *testing.T) {
+	s, _ := New(nil, "https://sal.example")
+	create := remoteCreate("https://remote.example/notes/1", "https://remote.example/users/carol")
+	if err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create); err == nil {
+		t.Error("expected an error for a note not attributed to the signer")
+	}
+}
+
+func TestReceiveNoteRejectsNoteOnAnotherHost(t *testing.T) {
+	s, _ := New(nil, "https://sal.example")
+	create := remoteCreate("https://elsewhere.example/notes/1", "https://remote.example/users/bob")
+	if err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create); err == nil {
+		t.Error("expected an error for a note hosted on another server")
 	}
 }

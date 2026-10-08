@@ -2,8 +2,8 @@ services:
   caddy:
     build:
       context: docker/caddy
-    env_file:
-      - .env
+    environment:
+      SALPUB_HOSTNAME: ${SALPUB_HOSTNAME}
     ports:
       - "80:80"
       - "443:443"
@@ -13,14 +13,11 @@ services:
   salpub:
     build:
       context: .
-    env_file:
-      - .env
     environment:
-      # Container-specific overrides; the rest comes from .env.
-      LISTEN_ADDR: ":8000"
+      SALPUB_HOSTNAME: ${SALPUB_HOSTNAME}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET:-}
       DATABASE_URL: postgres://${KC_DB_USERNAME}:${KC_DB_PASSWORD}@postgres:5432/salpub?sslmode=disable
-      # The public Keycloak URL resolves to this container, so discover Keycloak internally.
-      OIDC_DISCOVERY_URL: http://keycloak:8080${KC_HTTP_RELATIVE_PATH}/realms/${KEYCLOAK_REALM:-sal}
     depends_on:
       keycloak: 
         condition: service_healthy
@@ -31,6 +28,9 @@ services:
       context: docker/keycloak
     env_file:
       - .env
+    environment:
+      # Must be a full URL including the relative path (KC_HOSTNAME_BACKCHANNEL_DYNAMIC).
+      KC_HOSTNAME: ${SALPUB_HOSTNAME}/auth
     depends_on:
       postgres: 
         condition: service_healthy
@@ -45,8 +45,10 @@ services:
       retries: 5
   postgres:
     image: postgres:17
-    env_file:
-      - .env
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: ${KC_DB_USERNAME}
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD}
     ports:
       - "5432:5432"
     volumes:

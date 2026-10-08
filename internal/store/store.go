@@ -36,6 +36,17 @@ type Note struct {
 	ActorID   string
 	Content   string
 	Published time.Time
+	To        []string // absolute IRIs, e.g. PublicAddress or a followers collection
+	CC        []string
+}
+
+// PublicAddress is the ActivityStreams IRI that makes an object public.
+const PublicAddress = "https://www.w3.org/ns/activitystreams#Public"
+
+const noteColumns = `id, actor_id, content, published, to_addresses, cc_addresses`
+
+func scanNote(row interface{ Scan(...any) error }, n *Note) error {
+	return row.Scan(&n.ID, &n.ActorID, &n.Content, &n.Published, pq.Array(&n.To), pq.Array(&n.CC))
 }
 
 type Store struct {
@@ -176,11 +187,13 @@ func (s *Store) UpdateDisplayName(ctx context.Context, actorID, displayName stri
 	return nil
 }
 
-func (s *Store) CreateNote(ctx context.Context, actorID, content string) (*Note, error) {
-	n := &Note{ActorID: actorID, Content: content}
+func (s *Store) CreateNote(ctx context.Context, actorID, content string, to, cc []string) (*Note, error) {
+	// pq.Array sends a nil slice as NULL, but the columns are NOT NULL.
+	to, cc = append([]string{}, to...), append([]string{}, cc...)
+	n := &Note{ActorID: actorID, Content: content, To: to, CC: cc}
 	if err := s.db.QueryRowContext(ctx, `
-		INSERT INTO notes (actor_id, content) VALUES ($1, $2)
-		RETURNING id, published`, actorID, content,
+		INSERT INTO notes (actor_id, content, to_addresses, cc_addresses) VALUES ($1, $2, $3, $4)
+		RETURNING id, published`, actorID, content, pq.Array(to), pq.Array(cc),
 	).Scan(&n.ID, &n.Published); err != nil {
 		return nil, fmt.Errorf("insert note: %w", err)
 	}
@@ -190,9 +203,9 @@ func (s *Store) CreateNote(ctx context.Context, actorID, content string) (*Note,
 // GetNote returns a note and its author.
 func (s *Store) GetNote(ctx context.Context, id string) (*Note, *Actor, error) {
 	n := new(Note)
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT id, actor_id, content, published FROM notes WHERE id = $1`, id,
-	).Scan(&n.ID, &n.ActorID, &n.Content, &n.Published); errors.Is(err, sql.ErrNoRows) {
+	if err := scanNote(s.db.QueryRowContext(ctx,
+		`SELECT `+noteColumns+` FROM notes WHERE id = $1`, id,
+	), n); errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, ErrNotFound
 	} else if err != nil {
 		return nil, nil, fmt.Errorf("get note: %w", err)
@@ -206,18 +219,20 @@ func (s *Store) GetNote(ctx context.Context, id string) (*Note, *Actor, error) {
 	return n, a, nil
 }
 
-// ListNotes returns an actor's most recent notes, newest first, and the total count.
-func (s *Store) ListNotes(ctx context.Context, actorID string, limit int) ([]Note, int, error) {
+// ListNotes returns an actor's most recent notes, newest first, and the total
+// count. With publicOnly, only notes addressed to PublicAddress are included.
+func (s *Store) ListNotes(ctx context.Context, actorID string, limit int, publicOnly bool) ([]Note, int, error) {
+	const where = `WHERE actor_id = $1 AND (NOT $2 OR $3 = ANY(to_addresses || cc_addresses))`
 	var total int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM notes WHERE actor_id = $1`, actorID,
+		`SELECT count(*) FROM notes `+where, actorID, publicOnly, PublicAddress,
 	).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count notes: %w", err)
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, actor_id, content, published FROM notes
-		WHERE actor_id = $1 ORDER BY published DESC LIMIT $2`, actorID, limit)
+		SELECT `+noteColumns+` FROM notes `+where+`
+		ORDER BY published DESC LIMIT $4`, actorID, publicOnly, PublicAddress, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list notes: %w", err)
 	}
@@ -226,7 +241,7 @@ func (s *Store) ListNotes(ctx context.Context, actorID string, limit int) ([]Not
 	var notes []Note
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.ActorID, &n.Content, &n.Published); err != nil {
+		if err := scanNote(rows, &n); err != nil {
 			return nil, 0, fmt.Errorf("scan note: %w", err)
 		}
 		notes = append(notes, n)
@@ -234,52 +249,79 @@ func (s *Store) ListNotes(ctx context.Context, actorID string, limit int) ([]Not
 	return notes, total, rows.Err()
 }
 
-func (s *Store) AddFollower(ctx context.Context, actorID, followerURI, inbox string) error {
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO followers (actor_id, follower_uri, inbox) VALUES ($1, $2, $3)
-		ON CONFLICT (actor_id, follower_uri) DO UPDATE SET inbox = EXCLUDED.inbox`,
-		actorID, followerURI, inbox,
-	); err != nil {
-		return fmt.Errorf("add follower: %w", err)
-	}
-	return nil
+// PublicNote is a public note with the author details needed to show it.
+type PublicNote struct {
+	Note
+	Username    string
+	DisplayName string
+	ActorURI    string
 }
 
-func (s *Store) RemoveFollower(ctx context.Context, actorID, followerURI string) error {
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM followers WHERE actor_id = $1 AND follower_uri = $2`, actorID, followerURI,
-	); err != nil {
-		return fmt.Errorf("remove follower: %w", err)
-	}
-	return nil
-}
-
-// Followers returns the URIs of an actor's followers, oldest first.
-func (s *Store) Followers(ctx context.Context, actorID string) ([]string, error) {
-	return s.strings(ctx,
-		`SELECT follower_uri FROM followers WHERE actor_id = $1 ORDER BY created_at`, actorID)
-}
-
-// FollowerInboxes returns the distinct inboxes to deliver an actor's activities to.
-func (s *Store) FollowerInboxes(ctx context.Context, actorID string) ([]string, error) {
-	return s.strings(ctx,
-		`SELECT DISTINCT inbox FROM followers WHERE actor_id = $1`, actorID)
-}
-
-func (s *Store) strings(ctx context.Context, query string, args ...any) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+// ListPublicNotes returns the most recent notes addressed to PublicAddress
+// from all actors, newest first.
+func (s *Store) ListPublicNotes(ctx context.Context, limit int) ([]PublicNote, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT n.id, n.actor_id, n.content, n.published, n.to_addresses, n.cc_addresses,
+			a.username, COALESCE(a.display_name, ''), a.actor_uri
+		FROM notes n JOIN actors a ON a.id = n.actor_id
+		WHERE $1 = ANY(n.to_addresses || n.cc_addresses)
+		ORDER BY n.published DESC LIMIT $2`, PublicAddress, limit)
 	if err != nil {
-		return nil, fmt.Errorf("query: %w", err)
+		return nil, fmt.Errorf("list public notes: %w", err)
 	}
 	defer rows.Close()
 
-	var out []string
+	var notes []PublicNote
 	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			return nil, fmt.Errorf("scan: %w", err)
+		var n PublicNote
+		if err := rows.Scan(&n.ID, &n.ActorID, &n.Content, &n.Published, pq.Array(&n.To), pq.Array(&n.CC),
+			&n.Username, &n.DisplayName, &n.ActorURI); err != nil {
+			return nil, fmt.Errorf("scan public note: %w", err)
 		}
-		out = append(out, v)
+		notes = append(notes, n)
+	}
+	return notes, rows.Err()
+}
+
+// InboxNote is a note delivered to a local actor. Content is the sender's
+// unsanitized HTML.
+type InboxNote struct {
+	ObjectID     string
+	AttributedTo string
+	Content      string
+	Published    time.Time
+}
+
+// AddInboxNote stores a note delivered to actorID. A note already received
+// is ignored.
+func (s *Store) AddInboxNote(ctx context.Context, actorID string, n InboxNote) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO inbox_notes (actor_id, object_id, attributed_to, content, published)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+		actorID, n.ObjectID, n.AttributedTo, n.Content, n.Published,
+	); err != nil {
+		return fmt.Errorf("add inbox note: %w", err)
+	}
+	return nil
+}
+
+// ListInboxNotes returns the notes delivered to actorID, newest first.
+func (s *Store) ListInboxNotes(ctx context.Context, actorID string, limit int) ([]InboxNote, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT object_id, attributed_to, content, published FROM inbox_notes
+		WHERE actor_id = $1 ORDER BY published DESC LIMIT $2`, actorID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list inbox notes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InboxNote
+	for rows.Next() {
+		var n InboxNote
+		if err := rows.Scan(&n.ObjectID, &n.AttributedTo, &n.Content, &n.Published); err != nil {
+			return nil, fmt.Errorf("scan inbox note: %w", err)
+		}
+		out = append(out, n)
 	}
 	return out, rows.Err()
 }

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,8 +29,9 @@ const (
 	acceptHeader    = `application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"`
 )
 
-// inbox accepts Follow and Undo{Follow} from remote actors. Every request
-// must carry a valid HTTP Signature from the actor named in the activity.
+// inbox accepts Follow, Undo{Follow}, Accept/Reject of our own Follows, and
+// Create{Note} from remote actors. Every request must carry a valid HTTP Signature from
+// the actor named in the activity.
 func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 	local, ok := s.lookupActor(w, r, r.PathValue("username"))
 	if !ok {
@@ -82,12 +84,45 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 		inner, err := vocab.ToActivity(act.Object)
 		if err == nil && inner.Match(vocab.FollowType) &&
 			inner.Actor != nil && inner.Actor.GetLink().String() == signer {
-			if err := s.store.RemoveFollower(r.Context(), local.ID, signer); err != nil {
+			err := s.store.RemoveFromCollection(r.Context(), FollowersURI(local), signer)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
 				util.ServerError(w, err)
 				return
 			}
 			log.Printf("inbox %s: %s unfollowed", local.Username, signer)
 		}
+
+	case act.Match(vocab.AcceptType):
+		// Only accepts the pending Follow we sent to the signer, matched by id.
+		if act.Object == nil {
+			http.Error(w, "Accept has no object", http.StatusBadRequest)
+			return
+		}
+		err := s.acceptFollowing(r.Context(), local, signer, act.Object.GetLink().String())
+		if errors.Is(err, store.ErrNotFound) {
+			log.Printf("inbox %s: ignoring Accept from %s for an unknown Follow", local.Username, signer)
+		} else if err != nil {
+			util.ServerError(w, err)
+			return
+		} else {
+			log.Printf("inbox %s: %s accepted our follow", local.Username, signer)
+		}
+
+	case act.Match(vocab.CreateType):
+		if err := s.receiveNote(r.Context(), local, signer, act); err != nil {
+			log.Printf("inbox %s: ignoring Create from %s: %v", local.Username, signer, err)
+		}
+
+	case act.Match(vocab.RejectType):
+		follow, err := s.findFollow(r.Context(), local, signer)
+		if err == nil {
+			err = s.dropFollow(r.Context(), local, follow)
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			util.ServerError(w, err)
+			return
+		}
+		log.Printf("inbox %s: %s rejected our follow", local.Username, signer)
 
 	default:
 		log.Printf("inbox %s: ignoring %v from %s", local.Username, act.Type, signer)
@@ -109,11 +144,10 @@ func (s *Server) acceptFollow(ctx context.Context, local *store.Actor, followerU
 		return fmt.Errorf("follower %s has no inbox", followerURI)
 	}
 	personalInbox := follower.Inbox.GetLink().String()
-	inbox := personalInbox
-	if follower.Endpoints != nil && !vocab.IsNil(follower.Endpoints.SharedInbox) {
-		inbox = follower.Endpoints.SharedInbox.GetLink().String()
+	if err := s.putObject(ctx, follower); err != nil {
+		return err
 	}
-	if err := s.store.AddFollower(ctx, local.ID, followerURI, inbox); err != nil {
+	if err := s.store.AddToCollection(ctx, FollowersURI(local), followerURI); err != nil {
 		return err
 	}
 
@@ -135,16 +169,147 @@ func (s *Server) acceptFollow(ctx context.Context, local *store.Actor, followerU
 	return nil
 }
 
-func (s *Server) deliverToFollowers(a *store.Actor, payload []byte) {
+// deliverNote sends a note's Create to everyone it is addressed to: follower
+// inboxes when the actor's followers collection is addressed, and the inbox
+// (or shared inbox) of every other addressed actor. Each inbox gets it once.
+// receiveNote stores the Note in a Create sent to local's inbox. The note must
+// be embedded, attributed to the signer and hosted on the signer's server, and
+// local must follow the signer or be addressed directly.
+func (s *Server) receiveNote(ctx context.Context, local *store.Actor, signer string, act *vocab.Activity) error {
+	if vocab.IsNil(act.Object) || vocab.IsIRI(act.Object) {
+		return errors.New("object is not embedded")
+	}
+	obj, err := vocab.ToObject(act.Object)
+	if err != nil || !obj.Match(vocab.NoteType) {
+		return errors.New("object is not a Note")
+	}
+	if obj.AttributedTo == nil || obj.AttributedTo.GetLink().String() != signer {
+		return errors.New("note is not attributed to the signer")
+	}
+	objURL, err1 := url.Parse(obj.ID.String())
+	signerURL, err2 := url.Parse(signer)
+	if err1 != nil || err2 != nil || !strings.EqualFold(objURL.Host, signerURL.Host) {
+		return fmt.Errorf("note id %q is not on the signer's host", obj.ID)
+	}
+
+	me := vocab.IRI(local.ActorURI)
+	if !obj.To.Contains(me) && !obj.CC.Contains(me) && !act.To.Contains(me) && !act.CC.Contains(me) {
+		following, err := s.store.CollectionContains(ctx, FollowingURI(local), signer)
+		if err != nil {
+			return err
+		}
+		if !following {
+			return errors.New("not following the sender and not addressed")
+		}
+	}
+
+	published := obj.Published
+	if published.IsZero() {
+		published = time.Now()
+	}
+	var content string
+	if c := obj.Content.First(); c != nil {
+		content = c.String()
+	}
+	if err := s.store.AddInboxNote(ctx, local.ID, store.InboxNote{
+		ObjectID: obj.ID.String(), AttributedTo: signer, Content: content, Published: published,
+	}); err != nil {
+		return err
+	}
+	log.Printf("inbox %s: stored note %s from %s", local.Username, obj.ID, signer)
+	return nil
+}
+
+// resolveActorURI turns an actor URL or a @user@host handle into an actor
+// URI. Local handles are resolved directly; remote ones through WebFinger.
+func (s *Server) resolveActorURI(ctx context.Context, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if strings.Contains(ref, "://") {
+		if u, err := url.Parse(ref); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return "", fmt.Errorf("invalid actor URL %q", ref)
+		}
+		return ref, nil
+	}
+
+	user, host, ok := strings.Cut(strings.TrimPrefix(ref, "@"), "@")
+	if !ok || user == "" || host == "" {
+		return "", fmt.Errorf("%q is not a handle like @user@example.org or an actor URL", ref)
+	}
+	if strings.EqualFold(host, s.domain) {
+		return s.baseURL + "/users/" + strings.ToLower(user), nil
+	}
+
+	query := url.Values{"resource": {"acct:" + user + "@" + host}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://"+host+"/.well-known/webfinger?"+query.Encode(), nil)
+	if err != nil {
+		return "", fmt.Errorf("build WebFinger request: %w", err)
+	}
+	req.Header.Set("Accept", "application/jrd+json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("WebFinger %s: %w", ref, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("WebFinger %s: %s", ref, resp.Status)
+	}
+
+	var jrd struct {
+		Links []struct{ Rel, Type, Href string }
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes)).Decode(&jrd); err != nil {
+		return "", fmt.Errorf("decode WebFinger %s: %w", ref, err)
+	}
+	for _, l := range jrd.Links {
+		if l.Rel == "self" && (l.Type == contentType || strings.HasPrefix(l.Type, "application/ld+json")) {
+			return l.Href, nil
+		}
+	}
+	return "", fmt.Errorf("WebFinger %s: no ActivityPub actor link", ref)
+}
+
+func (s *Server) deliverNote(a *store.Actor, n *store.Note, payload []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), deliveryTimeout)
 	defer cancel()
 
-	inboxes, err := s.store.FollowerInboxes(ctx, a.ID)
-	if err != nil {
-		log.Printf("list follower inboxes for %s: %v", a.Username, err)
-		return
+	var inboxes []string
+	for _, addr := range slices.Concat(n.To, n.CC) {
+		switch addr {
+		case store.PublicAddress, a.ActorURI:
+			continue
+		case FollowersURI(a):
+			inboxes = append(inboxes, s.followerInboxes(ctx, a)...)
+		default:
+			if strings.HasPrefix(addr, s.baseURL+"/users/") {
+				inboxes = append(inboxes, addr+"/inbox")
+				continue
+			}
+			recipient, err := s.cachedActor(ctx, a, addr)
+			if err != nil {
+				log.Printf("resolve recipient %s: %v", addr, err)
+				continue
+			}
+			inboxes = append(inboxes, deliveryInbox(recipient))
+		}
 	}
-	for _, inbox := range inboxes {
+
+	slices.Sort(inboxes)
+	for _, inbox := range slices.Compact(inboxes) {
+		// Local inboxes are written directly: the public URL isn't reachable
+		// from inside the container.
+		if username, ok := strings.CutPrefix(inbox, s.baseURL+"/users/"); ok {
+			recipient, err := s.store.GetByUsername(ctx, strings.TrimSuffix(username, "/inbox"))
+			if err == nil {
+				err = s.store.AddInboxNote(ctx, recipient.ID, store.InboxNote{
+					ObjectID: s.noteURI(n).String(), AttributedTo: a.ActorURI, Content: n.Content, Published: n.Published,
+				})
+			}
+			if err != nil {
+				log.Printf("deliver to local inbox %s: %v", inbox, err)
+			}
+			continue
+		}
 		if err := s.deliver(ctx, a, inbox, payload); err != nil {
 			log.Printf("deliver to %s: %v", inbox, err)
 		}

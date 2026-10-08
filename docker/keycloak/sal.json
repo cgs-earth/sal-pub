@@ -3,7 +3,7 @@
     "enabled": true,
     "clients": [
         {
-            "clientId": "${KEYCLOAK_CLIENT_ID}",
+            "clientId": "sal-pub",
             "name": "sal-pub",
             "enabled": true,
             "baseUrl": "${SALPUB_HOSTNAME}",

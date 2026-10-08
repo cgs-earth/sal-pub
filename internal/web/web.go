@@ -5,13 +5,14 @@ package web
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	"html"
 	"html/template"
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -45,10 +46,6 @@ type Config struct {
 	// Where Keycloak sends the browser after logout. Must be listed in the
 	// client's "Valid post logout redirect URIs".
 	PostLogoutRedirectURL string
-
-	// DEVELOPMENT ONLY: skip TLS verification when talking to Keycloak, for
-	// a Caddy local CA. Applies to OIDC calls only, never to federation.
-	InsecureSkipVerify bool
 }
 
 type App struct {
@@ -57,25 +54,16 @@ type App struct {
 	oauth    *oauth2.Config
 	verifier *oidc.IDTokenVerifier
 	sessions *sessions.CookieStore
-	client   *http.Client // for Keycloak
-	callback string       // path component of RedirectURL
+	callback string // path component of RedirectURL
 
 	endSessionURL         string // Keycloak's end_session_endpoint, if advertised
 	postLogoutRedirectURL string
 }
 
 func New(ctx context.Context, cfg Config, st *store.Store, ap *activitypub.Server) (*App, error) {
-	client := http.DefaultClient
-	if cfg.InsecureSkipVerify {
-		log.Print("WARNING: TLS verification disabled for Keycloak (OIDC_INSECURE_SKIP_VERIFY)")
-		client = &http.Client{Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // development only
-		}}
-	}
-
-	discoveryCtx, discoveryURL := oidc.ClientContext(ctx, client), cfg.Issuer
+	discoveryCtx, discoveryURL := ctx, cfg.Issuer
 	if cfg.DiscoveryURL != "" {
-		discoveryCtx, discoveryURL = oidc.InsecureIssuerURLContext(discoveryCtx, cfg.Issuer), cfg.DiscoveryURL
+		discoveryCtx, discoveryURL = oidc.InsecureIssuerURLContext(ctx, cfg.Issuer), cfg.DiscoveryURL
 	}
 	provider, err := oidc.NewProvider(discoveryCtx, discoveryURL)
 	if err != nil {
@@ -115,7 +103,6 @@ func New(ctx context.Context, cfg Config, st *store.Store, ap *activitypub.Serve
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		},
 		sessions: cookies,
-		client:   client,
 		callback: redirect.Path,
 
 		endSessionURL:         discovery.EndSessionEndpoint,
@@ -133,6 +120,13 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+a.callback, a.oauthCallback)
 	mux.Handle("POST /logout", csrf.Handler(http.HandlerFunc(a.logout)))
 	mux.Handle("POST /notes", csrf.Handler(http.HandlerFunc(a.postNote)))
+	mux.HandleFunc("GET /users/{username}/inbox", a.readInbox)
+	mux.HandleFunc("GET /objects/{id}", a.getObject)
+	mux.Handle("POST /objects", csrf.Handler(a.requireActor(a.ap.ServeCreateObject)))
+	mux.Handle("PUT /objects/{id}", csrf.Handler(a.requireActor(a.ap.ServeUpdateObject)))
+	mux.Handle("DELETE /objects/{id}", csrf.Handler(a.requireActor(a.ap.ServeDeleteObject)))
+	mux.Handle("POST /follow", csrf.Handler(http.HandlerFunc(a.follow)))
+	mux.Handle("POST /unfollow", csrf.Handler(http.HandlerFunc(a.unfollow)))
 }
 
 // currentActor returns the logged-in user's actor, or nil if not logged in.
@@ -156,23 +150,43 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := map[string]any{"Actor": actor}
+	publicNotes, err := a.store.ListPublicNotes(r.Context(), 20)
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+
+	data := map[string]any{"Actor": actor, "PublicNotes": publicNotes}
 	if actor != nil {
-		notes, total, err := a.store.ListNotes(r.Context(), actor.ID, 20)
+		notes, total, err := a.store.ListNotes(r.Context(), actor.ID, 20, false)
 		if err != nil {
 			util.ServerError(w, err)
 			return
 		}
-		followers, err := a.store.Followers(r.Context(), actor.ID)
+		followers, err := a.ap.Followers(r.Context(), actor)
 		if err != nil {
 			util.ServerError(w, err)
 			return
 		}
+		following, err := a.ap.Following(r.Context(), actor)
+		if err != nil {
+			util.ServerError(w, err)
+			return
+		}
+		data["Following"] = following
+		inbox, err := a.store.ListInboxNotes(r.Context(), actor.ID, 20)
+		if err != nil {
+			util.ServerError(w, err)
+			return
+		}
+		data["Inbox"] = inbox
 		data["Handle"] = a.ap.Handle(actor.Username)
 		data["Notes"] = notes
 		data["NoteCount"] = total
 		data["Followers"] = followers
 		data["MaxNoteChars"] = maxNoteChars
+		data["DefaultTo"] = "public"
+		data["DefaultCC"] = activitypub.FollowersURI(actor)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -218,15 +232,14 @@ func (a *App) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.WithValue(r.Context(), oauth2.HTTPClient, a.client)
-	token, err := a.oauth.Exchange(ctx, r.URL.Query().Get("code"), oauth2.VerifierOption(verifier))
+	token, err := a.oauth.Exchange(r.Context(), r.URL.Query().Get("code"), oauth2.VerifierOption(verifier))
 	if err != nil {
 		log.Printf("token exchange: %v", err)
 		http.Error(w, "login failed", http.StatusUnauthorized)
 		return
 	}
 	rawIDToken, _ := token.Extra("id_token").(string)
-	idToken, err := a.verifier.Verify(oidc.ClientContext(r.Context(), a.client), rawIDToken)
+	idToken, err := a.verifier.Verify(r.Context(), rawIDToken)
 	if err != nil {
 		log.Printf("verify ID token: %v", err)
 		http.Error(w, "login failed", http.StatusUnauthorized)
@@ -300,16 +313,119 @@ func (a *App) postNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("a note must be 1-%d characters", maxNoteChars), http.StatusBadRequest)
 		return
 	}
-	if _, err := a.ap.PublishNote(r.Context(), actor, text); err != nil {
+	to, err := activitypub.ParseAddresses(r.PostFormValue("to"))
+	if err != nil {
+		http.Error(w, "To: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	cc, err := activitypub.ParseAddresses(r.PostFormValue("cc"))
+	if err != nil {
+		http.Error(w, "CC: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(to) == 0 && len(cc) == 0 {
+		http.Error(w, "a note needs at least one recipient in To or CC", http.StatusBadRequest)
+		return
+	}
+	if _, err := a.ap.PublishNote(r.Context(), actor, text, to, cc); err != nil {
 		util.ServerError(w, err)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// requireActor wraps a handler that needs the logged-in user's actor,
+// replying 401 when nobody is logged in.
+func (a *App) requireActor(h func(http.ResponseWriter, *http.Request, *store.Actor)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		actor, err := a.currentActor(r)
+		if err != nil {
+			util.ServerError(w, err)
+			return
+		}
+		if actor == nil {
+			http.Error(w, "log in first", http.StatusUnauthorized)
+			return
+		}
+		h(w, r, actor)
+	})
+}
+
+// getObject serves /objects/{id}; non-public objects only to their author.
+func (a *App) getObject(w http.ResponseWriter, r *http.Request) {
+	actor, err := a.currentActor(r)
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	a.ap.ServeObject(w, r, actor)
+}
+
+// readInbox lets a logged-in user read their own inbox. (POST to the same
+// path is federation delivery, handled by the activitypub package.)
+func (a *App) readInbox(w http.ResponseWriter, r *http.Request) {
+	actor, err := a.currentActor(r)
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	if actor == nil {
+		http.Error(w, "log in first", http.StatusUnauthorized)
+		return
+	}
+	if actor.Username != r.PathValue("username") {
+		http.Error(w, "this is not your inbox", http.StatusForbidden)
+		return
+	}
+	a.ap.ServeInbox(w, r, actor)
+}
+
+// follow sends a Follow to the actor URL or @user@host handle in "target".
+func (a *App) follow(w http.ResponseWriter, r *http.Request) {
+	actor, err := a.currentActor(r)
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	if actor == nil {
+		http.Error(w, "log in first", http.StatusUnauthorized)
+		return
+	}
+	target := strings.TrimSpace(r.PostFormValue("target"))
+	if _, err := a.ap.Follow(r.Context(), actor, target); err != nil {
+		log.Printf("follow %q: %v", target, err)
+		http.Error(w, fmt.Sprintf("could not follow %s: %v", target, err), http.StatusBadGateway)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (a *App) unfollow(w http.ResponseWriter, r *http.Request) {
+	actor, err := a.currentActor(r)
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	if actor == nil {
+		http.Error(w, "log in first", http.StatusUnauthorized)
+		return
+	}
+	err = a.ap.Unfollow(r.Context(), actor, r.PostFormValue("target"))
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		util.ServerError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+var htmlTag = regexp.MustCompile(`<[^>]*>`)
+
 // Note content is HTML that activitypub.PublishNote built from escaped text.
+// Inbox notes come from other servers, so they are only shown as plain text:
+// tags are stripped and the result is escaped by html/template as usual.
 var homeTemplate = template.Must(template.New("home").Funcs(template.FuncMap{
-	"noteHTML": func(s string) template.HTML { return template.HTML(s) }, //nolint:gosec // escaped at write time
+	"noteHTML":  func(s string) template.HTML { return template.HTML(s) }, //nolint:gosec // escaped at write time
+	"plainText": func(s string) string { return html.UnescapeString(htmlTag.ReplaceAllString(s, " ")) },
 }).Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -318,7 +434,8 @@ var homeTemplate = template.Must(template.New("home").Funcs(template.FuncMap{
 <title>sal-pub</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-  textarea { width: 100%; box-sizing: border-box; font: inherit; }
+  textarea, input[type=text] { width: 100%; box-sizing: border-box; font: inherit; }
+  label { display: block; margin-top: .5rem; }
   .note { border-top: 1px solid #ddd; padding: .5rem 0; }
   .meta { color: #666; font-size: .875rem; }
   code { word-break: break-all; }
@@ -329,6 +446,16 @@ var homeTemplate = template.Must(template.New("home").Funcs(template.FuncMap{
 {{if not .Actor}}
   <p>Sign in to get an ActivityPub identity that other fediverse servers can follow.</p>
   <p><a href="/login">Log in with Keycloak</a></p>
+  <h2>Public posts</h2>
+  {{range .PublicNotes}}
+    <div class="note">
+      <div class="meta"><a href="{{.ActorURI}}"><strong>{{or .DisplayName .Username}}</strong></a>
+        · <a href="/notes/{{.ID}}">{{.Published.Format "2006-01-02 15:04 MST"}}</a></div>
+      <div>{{noteHTML .Content}}</div>
+    </div>
+  {{else}}
+    <p class="meta">No public posts yet.</p>
+  {{end}}
 {{else}}
   <p>Signed in as <strong>{{or .Actor.DisplayName .Actor.Username}}</strong>.
      Your fediverse handle is <strong>{{.Handle}}</strong>.</p>
@@ -338,25 +465,59 @@ var homeTemplate = template.Must(template.New("home").Funcs(template.FuncMap{
 
   <h2>New note</h2>
   <form method="post" action="/notes">
+    <label>To <input type="text" name="to" value="{{.DefaultTo}}"></label>
+    <label>CC <input type="text" name="cc" value="{{.DefaultCC}}"></label>
+    <p class="meta">Actor or collection URLs, separated by spaces or commas. Use <code>public</code> for
+       everyone and <code>{{.DefaultCC}}</code> for your followers. Notes not addressed to
+       <code>public</code> are delivered only to their recipients and hidden from your outbox.</p>
     <textarea name="content" rows="4" maxlength="{{.MaxNoteChars}}" required></textarea>
-    <p><button>Publish</button> <span class="meta">Public, and delivered to your followers.</span></p>
+    <p><button>Publish</button></p>
   </form>
+
+  <h2>Following</h2>
+  <form method="post" action="/follow" class="field">
+    <input type="text" name="target" placeholder="@user@example.org or actor URL" required>
+    <button>Follow</button>
+  </form>
+  {{if .Following}}
+  <ul>{{range .Following}}
+    <li><a href="{{.TargetURI}}">{{.TargetURI}}</a>
+      {{if not .Accepted}}<span class="pill">pending</span>{{end}}
+      <form method="post" action="/unfollow" style="display:inline">
+        <input type="hidden" name="target" value="{{.TargetURI}}"><button>Unfollow</button>
+      </form></li>
+  {{end}}</ul>
+  {{end}}
 
   {{if .Followers}}
   <h2>Followers</h2>
   <ul>{{range .Followers}}<li><a href="{{.}}">{{.}}</a></li>{{end}}</ul>
   {{end}}
 
+  <h2>Inbox</h2>
+  {{range .Inbox}}
+    <div class="note">
+      <div class="meta"><a href="{{.AttributedTo}}">{{.AttributedTo}}</a>
+        · <a href="{{.ObjectID}}">{{.Published.Format "2006-01-02 15:04 MST"}}</a></div>
+      <div>{{plainText .Content}}</div>
+    </div>
+  {{else}}
+    <p class="meta">Nothing yet. Posts from accounts you follow, and posts addressed to you, show up here.</p>
+  {{end}}
+
   <h2>Your notes</h2>
   {{range .Notes}}
     <div class="note">
-      <div class="meta"><a href="/notes/{{.ID}}">{{.Published.Format "2006-01-02 15:04 MST"}}</a></div>
+      <div class="meta"><a href="/notes/{{.ID}}">{{.Published.Format "2006-01-02 15:04 MST"}}</a>
+        · to: {{range $i, $a := .To}}{{if $i}}, {{end}}{{$a}}{{else}}—{{end}}
+        {{with .CC}}· cc: {{range $i, $a := .}}{{if $i}}, {{end}}{{$a}}{{end}}{{end}}</div>
       <div>{{noteHTML .Content}}</div>
     </div>
   {{else}}
     <p class="meta">Nothing yet.</p>
   {{end}}
 {{end}}
+
 </body>
 </html>
 `))
