@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+project_id = "my-gcp-project"
+hostname   = "sal.example.org"
+image_tag  = "v1"
+
+# region              = "us-central1"
+# salpub_replicas     = 2
+# deletion_protection = true
+
+# Same names as in .env.default; leave out providers you don't use.
+identity_providers = {
+  # IDP_GITHUB_CLIENT_ID     = ""
+  # IDP_GITHUB_CLIENT_SECRET = ""
+  # IDP_GOOGLE_CLIENT_ID     = ""
+  # IDP_GOOGLE_CLIENT_SECRET = ""
+}

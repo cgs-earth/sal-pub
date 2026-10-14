@@ -31,6 +31,7 @@ and `go-fed/httpsig` for HTTP Signatures. User-facing docs are in `docs/activity
 | `docker/caddy/` | Reverse proxy at `SALPUB_HOSTNAME`: `/auth/*` and `/.well-known/openid-configuration` → Keycloak, everything else → `salpub:8000`. |
 | `docker/keycloak/` | Keycloak 26 image plus the `sal` realm import (`sal.json`). |
 | `docker/postgres/` | Init scripts mounted into `/docker-entrypoint-initdb.d`; creates the `salpub` database on a fresh data directory. |
+| `deploy/gcp/` | Terraform/OpenTofu for GCP: GKE Autopilot running the same three images (Caddy as the public entry point), Cloud SQL Postgres, Artifact Registry. `build-images.sh` builds linux/amd64 images. See its README. |
 
 ## Commands
 
