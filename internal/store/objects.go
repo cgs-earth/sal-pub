@@ -149,6 +149,41 @@ func (s *Store) CollectionItems(ctx context.Context, collectionID string) iter.S
 	}
 }
 
+// CollectionObjects returns up to limit stored objects in a collection, most
+// recently added first, and the number of items in the collection. Items
+// that aren't stored as objects are skipped.
+func (s *Store) CollectionObjects(ctx context.Context, collectionID string, limit int) ([]vocab.Item, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM collection_items WHERE collection_id = $1`, collectionID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count collection: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT o.id, o.data FROM collection_items c JOIN objects o ON o.id = c.item_id
+		WHERE c.collection_id = $1 ORDER BY c.added_at DESC, c.item_id LIMIT $2`, collectionID, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list collection objects: %w", err)
+	}
+	defer rows.Close()
+
+	var items []vocab.Item
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, 0, fmt.Errorf("scan collection object: %w", err)
+		}
+		it, err := vocab.UnmarshalJSON(data)
+		if err != nil {
+			return nil, 0, fmt.Errorf("decode object %s: %w", id, err)
+		}
+		items = append(items, it)
+	}
+	return items, total, rows.Err()
+}
+
 // AddToCollection adds itemID to collectionID. Adding an item that is
 // already there does nothing.
 func (s *Store) AddToCollection(ctx context.Context, collectionID, itemID string) error {

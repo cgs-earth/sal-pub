@@ -147,6 +147,11 @@ func (s *Store) GetByUsername(ctx context.Context, username string) (*Actor, err
 		`SELECT `+actorColumns+` FROM actors WHERE username = $1`, username))
 }
 
+func (s *Store) GetByActorURI(ctx context.Context, uri string) (*Actor, error) {
+	return scanActor(s.db.QueryRowContext(ctx,
+		`SELECT `+actorColumns+` FROM actors WHERE actor_uri = $1`, uri))
+}
+
 func (s *Store) GetBySubject(ctx context.Context, subject string) (*Actor, error) {
 	return scanActor(s.db.QueryRowContext(ctx,
 		`SELECT `+actorColumns+` FROM actors WHERE keycloak_subject = $1`, subject))
