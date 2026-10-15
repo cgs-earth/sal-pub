@@ -27,7 +27,7 @@ func loggedInData() map[string]any {
 		"Actor":     actor,
 		"Handle":    "@alice@sal.example",
 		"NoteCount": 1,
-		"Notes": []store.Note{{
+		"Notes": []activitypub.Note{{
 			ID: "n1", Content: "<p>hi</p>", Published: time.Now(),
 			To: []string{store.PublicAddress}, CC: []string{followers},
 		}},
@@ -41,7 +41,7 @@ func loggedInData() map[string]any {
 }
 
 func TestHomeLoggedOutShowsLoginAndPublicPosts(t *testing.T) {
-	out := render(t, map[string]any{"PublicNotes": []store.PublicNote{{Username: "bob", Note: store.Note{ID: "n1", Content: "<p>pub</p>"}}}})
+	out := render(t, map[string]any{"PublicNotes": []activitypub.Note{{ID: "n1", Content: "<p>pub</p>", Author: &store.Actor{Username: "bob"}}}})
 	for _, want := range []string{`href="/login"`, "Public posts", "<p>pub</p>"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)

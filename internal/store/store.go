@@ -1,4 +1,5 @@
-// Package store is the Postgres persistence layer for actors, notes and followers.
+// Package store is the Postgres persistence layer for actors, inbox notes and
+// generic ActivityPub objects and collections.
 package store
 
 import (
@@ -31,23 +32,8 @@ type Actor struct {
 	PrivateKeyPEM   string
 }
 
-type Note struct {
-	ID        string
-	ActorID   string
-	Content   string
-	Published time.Time
-	To        []string // absolute IRIs, e.g. PublicAddress or a followers collection
-	CC        []string
-}
-
 // PublicAddress is the ActivityStreams IRI that makes an object public.
 const PublicAddress = "https://www.w3.org/ns/activitystreams#Public"
-
-const noteColumns = `id, actor_id, content, published, to_addresses, cc_addresses`
-
-func scanNote(row interface{ Scan(...any) error }, n *Note) error {
-	return row.Scan(&n.ID, &n.ActorID, &n.Content, &n.Published, pq.Array(&n.To), pq.Array(&n.CC))
-}
 
 type Store struct {
 	db *sql.DB
@@ -190,102 +176,6 @@ func (s *Store) UpdateDisplayName(ctx context.Context, actorID, displayName stri
 		return fmt.Errorf("update display name: %w", err)
 	}
 	return nil
-}
-
-func (s *Store) CreateNote(ctx context.Context, actorID, content string, to, cc []string) (*Note, error) {
-	// pq.Array sends a nil slice as NULL, but the columns are NOT NULL.
-	to, cc = append([]string{}, to...), append([]string{}, cc...)
-	n := &Note{ActorID: actorID, Content: content, To: to, CC: cc}
-	if err := s.db.QueryRowContext(ctx, `
-		INSERT INTO notes (actor_id, content, to_addresses, cc_addresses) VALUES ($1, $2, $3, $4)
-		RETURNING id, published`, actorID, content, pq.Array(to), pq.Array(cc),
-	).Scan(&n.ID, &n.Published); err != nil {
-		return nil, fmt.Errorf("insert note: %w", err)
-	}
-	return n, nil
-}
-
-// GetNote returns a note and its author.
-func (s *Store) GetNote(ctx context.Context, id string) (*Note, *Actor, error) {
-	n := new(Note)
-	if err := scanNote(s.db.QueryRowContext(ctx,
-		`SELECT `+noteColumns+` FROM notes WHERE id = $1`, id,
-	), n); errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, ErrNotFound
-	} else if err != nil {
-		return nil, nil, fmt.Errorf("get note: %w", err)
-	}
-
-	a, err := scanActor(s.db.QueryRowContext(ctx,
-		`SELECT `+actorColumns+` FROM actors WHERE id = $1`, n.ActorID))
-	if err != nil {
-		return nil, nil, err
-	}
-	return n, a, nil
-}
-
-// ListNotes returns an actor's most recent notes, newest first, and the total
-// count. With publicOnly, only notes addressed to PublicAddress are included.
-func (s *Store) ListNotes(ctx context.Context, actorID string, limit int, publicOnly bool) ([]Note, int, error) {
-	const where = `WHERE actor_id = $1 AND (NOT $2 OR $3 = ANY(to_addresses || cc_addresses))`
-	var total int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM notes `+where, actorID, publicOnly, PublicAddress,
-	).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count notes: %w", err)
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT `+noteColumns+` FROM notes `+where+`
-		ORDER BY published DESC LIMIT $4`, actorID, publicOnly, PublicAddress, limit)
-	if err != nil {
-		return nil, 0, fmt.Errorf("list notes: %w", err)
-	}
-	defer rows.Close()
-
-	var notes []Note
-	for rows.Next() {
-		var n Note
-		if err := scanNote(rows, &n); err != nil {
-			return nil, 0, fmt.Errorf("scan note: %w", err)
-		}
-		notes = append(notes, n)
-	}
-	return notes, total, rows.Err()
-}
-
-// PublicNote is a public note with the author details needed to show it.
-type PublicNote struct {
-	Note
-	Username    string
-	DisplayName string
-	ActorURI    string
-}
-
-// ListPublicNotes returns the most recent notes addressed to PublicAddress
-// from all actors, newest first.
-func (s *Store) ListPublicNotes(ctx context.Context, limit int) ([]PublicNote, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT n.id, n.actor_id, n.content, n.published, n.to_addresses, n.cc_addresses,
-			a.username, COALESCE(a.display_name, ''), a.actor_uri
-		FROM notes n JOIN actors a ON a.id = n.actor_id
-		WHERE $1 = ANY(n.to_addresses || n.cc_addresses)
-		ORDER BY n.published DESC LIMIT $2`, PublicAddress, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list public notes: %w", err)
-	}
-	defer rows.Close()
-
-	var notes []PublicNote
-	for rows.Next() {
-		var n PublicNote
-		if err := rows.Scan(&n.ID, &n.ActorID, &n.Content, &n.Published, pq.Array(&n.To), pq.Array(&n.CC),
-			&n.Username, &n.DisplayName, &n.ActorURI); err != nil {
-			return nil, fmt.Errorf("scan public note: %w", err)
-		}
-		notes = append(notes, n)
-	}
-	return notes, rows.Err()
 }
 
 // InboxNote is a note delivered to a local actor. Content is the sender's

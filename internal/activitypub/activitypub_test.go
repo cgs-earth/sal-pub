@@ -58,7 +58,7 @@ func marshalToMap(t *testing.T, v any) map[string]any {
 	switch v := v.(type) {
 	case *store.Actor:
 		data, err = marshal(s.actorDocument(v))
-	case *store.Note:
+	case *vocab.Note:
 		data, err = marshal(s.createActivity(testActor(), v))
 	}
 	if err != nil {
@@ -95,17 +95,19 @@ func TestActorDocumentHasMastodonFields(t *testing.T) {
 }
 
 func TestCreateActivityWrapsPublicNote(t *testing.T) {
-	note := &store.Note{
-		ID: "5bd2beed-0580-4b44-8189-cf80b71d7746", Content: "<p>hi</p>", Published: time.Now(),
-		To: []string{store.PublicAddress}, CC: []string{"https://sal.example/users/alice/followers"},
-	}
+	note := vocab.ObjectNew(vocab.NoteType)
+	note.ID = "https://sal.example/notes/N1"
+	note.Content = vocab.DefaultNaturalLanguage("<p>hi</p>")
+	note.Published = time.Now()
+	note.To = vocab.ItemCollection{vocab.PublicNS}
+	note.CC = vocab.ItemCollection{vocab.IRI("https://sal.example/users/alice/followers")}
 	doc := marshalToMap(t, note)
 
 	if doc["type"] != "Create" || doc["actor"] != "https://sal.example/users/alice" {
 		t.Fatalf("activity = %v", doc)
 	}
 	obj, _ := doc["object"].(map[string]any)
-	if obj["type"] != "Note" || obj["id"] != "https://sal.example/notes/"+note.ID || obj["content"] != "<p>hi</p>" {
+	if obj["type"] != "Note" || obj["id"] != "https://sal.example/notes/N1" || obj["content"] != "<p>hi</p>" {
 		t.Errorf("object = %v", obj)
 	}
 	to, _ := obj["to"].([]any)

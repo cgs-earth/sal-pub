@@ -169,9 +169,6 @@ func (s *Server) acceptFollow(ctx context.Context, local *store.Actor, followerU
 	return nil
 }
 
-// deliverNote sends a note's Create to everyone it is addressed to: follower
-// inboxes when the actor's followers collection is addressed, and the inbox
-// (or shared inbox) of every other addressed actor. Each inbox gets it once.
 // receiveNote stores the Note in a Create sent to local's inbox. The note must
 // be embedded, attributed to the signer and hosted on the signer's server, and
 // local must follow the signer or be addressed directly.
@@ -269,13 +266,17 @@ func (s *Server) resolveActorURI(ctx context.Context, ref string) (string, error
 	return "", fmt.Errorf("WebFinger %s: no ActivityPub actor link", ref)
 }
 
-func (s *Server) deliverNote(a *store.Actor, n *store.Note, payload []byte) {
+// deliverNote sends a note's Create (payload) to everyone the note is
+// addressed to: follower inboxes when the actor's followers collection is
+// addressed, and the inbox (or shared inbox) of every other addressed actor.
+// Each inbox gets it once.
+func (s *Server) deliverNote(a *store.Actor, note *vocab.Note, payload []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), deliveryTimeout)
 	defer cancel()
 
 	var inboxes []string
-	for _, addr := range slices.Concat(n.To, n.CC) {
-		switch addr {
+	for _, it := range slices.Concat(note.To, note.CC) {
+		switch addr := it.GetLink().String(); addr {
 		case store.PublicAddress, a.ActorURI:
 			continue
 		case FollowersURI(a):
@@ -302,7 +303,7 @@ func (s *Server) deliverNote(a *store.Actor, n *store.Note, payload []byte) {
 			recipient, err := s.store.GetByUsername(ctx, strings.TrimSuffix(username, "/inbox"))
 			if err == nil {
 				err = s.store.AddInboxNote(ctx, recipient.ID, store.InboxNote{
-					ObjectID: s.noteURI(n).String(), AttributedTo: a.ActorURI, Content: n.Content, Published: n.Published,
+					ObjectID: note.ID.String(), AttributedTo: a.ActorURI, Content: note.Content.First().String(), Published: note.Published,
 				})
 			}
 			if err != nil {

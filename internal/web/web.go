@@ -152,7 +152,7 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicNotes, err := a.store.ListPublicNotes(r.Context(), 20)
+	publicNotes, err := a.ap.PublicNotes(r.Context(), 20)
 	if err != nil {
 		util.ServerError(w, err)
 		return
@@ -160,7 +160,7 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]any{"Actor": actor, "PublicNotes": publicNotes}
 	if actor != nil {
-		notes, total, err := a.store.ListNotes(r.Context(), actor.ID, 20, false)
+		notes, total, err := a.ap.Notes(r.Context(), actor, 20)
 		if err != nil {
 			util.ServerError(w, err)
 			return

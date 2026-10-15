@@ -136,22 +136,6 @@ func sanitizeUsername(name string) string {
 	return name
 }
 
-// PublishNote stores a note addressed to the given to/cc IRIs and delivers it
-// to their inboxes.
-func (s *Server) PublishNote(ctx context.Context, a *store.Actor, text string, to, cc []string) (*store.Note, error) {
-	n, err := s.store.CreateNote(ctx, a.ID, textToHTML(text), to, cc)
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := marshal(s.createActivity(a, n))
-	if err != nil {
-		return nil, fmt.Errorf("encode Create: %w", err)
-	}
-	go s.deliverNote(a, n, payload)
-	return n, nil
-}
-
 // ParseAddresses splits a comma- or space-separated list of recipients into
 // absolute http(s) IRIs, dropping duplicates. "public" and "as:Public" are
 // accepted as shorthand for the public collection.
@@ -190,10 +174,6 @@ func textToHTML(text string) string {
 // Documents
 // ---------------------------------------------------------------------------
 
-func (s *Server) noteURI(n *store.Note) vocab.IRI {
-	return vocab.IRI(s.baseURL + "/notes/" + n.ID)
-}
-
 func (s *Server) actorDocument(a *store.Actor) *vocab.Person {
 	id := vocab.IRI(a.ActorURI)
 	p := vocab.PersonNew(id)
@@ -213,23 +193,8 @@ func (s *Server) actorDocument(a *store.Actor) *vocab.Person {
 	return p
 }
 
-func (s *Server) noteObject(a *store.Actor, n *store.Note) *vocab.Note {
-	note := vocab.ObjectNew(vocab.NoteType)
-	note.ID = s.noteURI(n)
-	note.AttributedTo = vocab.IRI(a.ActorURI)
-	note.Content = vocab.DefaultNaturalLanguage(n.Content)
-	note.Published = n.Published.UTC().Truncate(time.Second)
-	for _, iri := range n.To {
-		note.To = append(note.To, vocab.IRI(iri))
-	}
-	for _, iri := range n.CC {
-		note.CC = append(note.CC, vocab.IRI(iri))
-	}
-	return note
-}
-
-func (s *Server) createActivity(a *store.Actor, n *store.Note) *vocab.Create {
-	note := s.noteObject(a, n)
+// createActivity wraps one of a's notes in a Create.
+func (s *Server) createActivity(a *store.Actor, note *vocab.Note) *vocab.Create {
 	create := vocab.CreateNew(note.ID+"#create", note)
 	create.Actor = vocab.IRI(a.ActorURI)
 	create.Published = note.Published
@@ -307,17 +272,19 @@ func (s *Server) outbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Fetches aren't authenticated, so only public notes are listed.
-	notes, total, err := s.store.ListNotes(r.Context(), a.ID, outboxLimit, true)
+	// Fetches aren't authenticated, so the outbox only holds public notes.
+	notes, total, err := s.store.CollectionObjects(r.Context(), OutboxURI(a), outboxLimit)
 	if err != nil {
 		util.ServerError(w, err)
 		return
 	}
 	items := make(vocab.ItemCollection, 0, len(notes))
-	for i := range notes {
-		items = append(items, s.createActivity(a, &notes[i]))
+	for _, it := range notes {
+		if note, err := vocab.ToObject(it); err == nil {
+			items = append(items, s.createActivity(a, note))
+		}
 	}
-	writeAP(w, orderedCollection(vocab.IRI(a.ActorURI).AddPath("outbox"), total, items))
+	writeAP(w, orderedCollection(vocab.IRI(OutboxURI(a)), total, items))
 }
 
 func (s *Server) followers(w http.ResponseWriter, r *http.Request) {
@@ -377,38 +344,31 @@ func (s *Server) ServeInbox(w http.ResponseWriter, r *http.Request, a *store.Act
 
 // publicNotes lists the most recent public notes from all local actors.
 func (s *Server) publicNotes(w http.ResponseWriter, r *http.Request) {
-	notes, err := s.store.ListPublicNotes(r.Context(), outboxLimit)
+	notes, total, err := s.store.CollectionObjects(r.Context(), s.publicNotesID(), outboxLimit)
 	if err != nil {
 		util.ServerError(w, err)
 		return
 	}
-	items := make(vocab.ItemCollection, 0, len(notes))
-	for i := range notes {
-		items = append(items, s.noteObject(&store.Actor{ActorURI: notes[i].ActorURI}, &notes[i].Note))
-	}
-	writeAP(w, orderedCollection(vocab.IRI(s.baseURL+"/notes"), len(items), items))
+	writeAP(w, orderedCollection(vocab.IRI(s.publicNotesID()), total, notes))
 }
 
-var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
+// note serves a single local note.
 func (s *Server) note(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if !uuidPattern.MatchString(id) {
+	it, err := s.store.GetObject(r.Context(), s.noteID(r.PathValue("id")))
+	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
-	}
-	n, a, err := s.store.GetNote(r.Context(), id)
-	// Fetches aren't authenticated, so non-public notes are hidden.
-	if errors.Is(err, store.ErrNotFound) ||
-		(err == nil && !slices.Contains(n.To, store.PublicAddress) && !slices.Contains(n.CC, store.PublicAddress)) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
+	} else if err != nil {
 		util.ServerError(w, err)
 		return
 	}
-	writeAP(w, s.noteObject(a, n))
+	// Fetches aren't authenticated, so non-public notes are hidden.
+	note, err := vocab.ToObject(it)
+	if err != nil || note.Type != vocab.NoteType || !isPublic(note) {
+		http.NotFound(w, r)
+		return
+	}
+	writeAP(w, note)
 }
 
 func (s *Server) lookupActor(w http.ResponseWriter, r *http.Request, username string) (*store.Actor, bool) {

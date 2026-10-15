@@ -140,7 +140,10 @@ once, and addresses that don't resolve to an actor with an inbox are logged and 
 The outbox and `GET /notes/{id}` aren't authenticated, so they only show notes addressed to
 `public`. Your own home page lists all of your notes, with their addressing.
 
-Addressing is stored per note (`notes.to_addresses` / `notes.cc_addresses`).
+Notes are stored as `Note` objects in the generic object store (see [Objects](#objects)), with
+ids `<SALPUB_HOSTNAME>/notes/{id}` and their `to`/`cc` as given. Each note is listed in its author's
+private `<actor>#notes` collection, which the home page reads. Public notes are also listed in the
+author's outbox (`<actor>/outbox`) and in the site-wide `<SALPUB_HOSTNAME>/notes` collection.
 
 ## Following
 
@@ -191,10 +194,12 @@ tags stripped and the text escaped, so links and formatting are lost.
 
 `internal/store` has generic storage for any ActivityPub object (table `objects`, keyed by `id`, data
 as JSONB) and for collection membership (table `collection_items`, keyed by collection and item IRIs),
-behind the `Objects` and `Collections` interfaces. Following uses it (see [Following](#following)).
+behind the `Objects` and `Collections` interfaces. Notes (see [Addressing](#addressing)) and following
+(see [Following](#following)) use it.
 
 Logged-in users can also manage plain objects (Note, Article, Image, … but not activities, actors or
-collections) over HTTP. Requests use the browser session; write requests must be same-origin.
+collections) over HTTP, at `/objects/{id}`. These are separate from the notes published from the
+home page, and changes to them aren't federated. Requests use the browser session; write requests must be same-origin.
 
 | Request | Result |
 |---|---|
