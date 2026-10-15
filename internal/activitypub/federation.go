@@ -266,11 +266,13 @@ func (s *Server) resolveActorURI(ctx context.Context, ref string) (string, error
 	return "", fmt.Errorf("WebFinger %s: no ActivityPub actor link", ref)
 }
 
-// deliverNote sends a note's Create (payload) to everyone the note is
+// deliverNote sends an activity about a note (payload) to everyone the note is
 // addressed to: follower inboxes when the actor's followers collection is
 // addressed, and the inbox (or shared inbox) of every other addressed actor.
-// Each inbox gets it once.
-func (s *Server) deliverNote(a *store.Actor, note *vocab.Note, payload []byte) {
+// Each inbox gets it once. With storeLocal (a Create), the note is written
+// straight into local recipients' inboxes; otherwise local inboxes are skipped,
+// since edits and deletes update local copies directly.
+func (s *Server) deliverNote(a *store.Actor, note *vocab.Note, payload []byte, storeLocal bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), deliveryTimeout)
 	defer cancel()
 
@@ -300,6 +302,9 @@ func (s *Server) deliverNote(a *store.Actor, note *vocab.Note, payload []byte) {
 		// Local inboxes are written directly: the public URL isn't reachable
 		// from inside the container.
 		if username, ok := strings.CutPrefix(inbox, s.baseURL+"/users/"); ok {
+			if !storeLocal {
+				continue
+			}
 			recipient, err := s.store.GetByUsername(ctx, strings.TrimSuffix(username, "/inbox"))
 			if err == nil {
 				err = s.store.AddInboxNote(ctx, recipient.ID, store.InboxNote{

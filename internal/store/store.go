@@ -200,6 +200,26 @@ func (s *Store) AddInboxNote(ctx context.Context, actorID string, n InboxNote) e
 	return nil
 }
 
+// UpdateInboxNotes replaces the content of the note objectID in every inbox
+// it was delivered to.
+func (s *Store) UpdateInboxNotes(ctx context.Context, objectID, content string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE inbox_notes SET content = $2 WHERE object_id = $1`, objectID, content,
+	); err != nil {
+		return fmt.Errorf("update inbox notes: %w", err)
+	}
+	return nil
+}
+
+// DeleteInboxNotes removes the note objectID from every inbox it was
+// delivered to.
+func (s *Store) DeleteInboxNotes(ctx context.Context, objectID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM inbox_notes WHERE object_id = $1`, objectID); err != nil {
+		return fmt.Errorf("delete inbox notes: %w", err)
+	}
+	return nil
+}
+
 // ListInboxNotes returns the notes delivered to actorID, newest first.
 func (s *Store) ListInboxNotes(ctx context.Context, actorID string, limit int) ([]InboxNote, error) {
 	rows, err := s.db.QueryContext(ctx, `

@@ -2,6 +2,7 @@ package activitypub
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,5 +53,46 @@ func TestPublishNoteKeepsNonPublicNoteOutOfOutbox(t *testing.T) {
 	s.note(w, r)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("GET /notes/{id} = %d, want 404", w.Code)
+	}
+}
+
+func TestEditNoteReplacesContent(t *testing.T) {
+	s, a := crudServer(t), actorNamed("alice")
+	id := publish(t, s, a, "old", []string{store.PublicAddress})
+
+	if _, err := s.EditNote(context.Background(), a, id, "new"); err != nil {
+		t.Fatal(err)
+	}
+	notes, _, err := s.Notes(context.Background(), a, 20)
+	if err != nil || len(notes) != 1 || notes[0].Content != "<p>new</p>" || notes[0].Updated.IsZero() {
+		t.Errorf("Notes = %+v, %v", notes, err)
+	}
+}
+
+func TestEditNoteByOtherActorReturnsErrNotFound(t *testing.T) {
+	s := crudServer(t)
+	id := publish(t, s, actorNamed("alice"), "mine", []string{store.PublicAddress})
+	if _, err := s.EditNote(context.Background(), actorNamed("bob"), id, "theirs"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("err = %v, want store.ErrNotFound", err)
+	}
+}
+
+func TestDeleteNoteRemovesItEverywhere(t *testing.T) {
+	s, a := crudServer(t), actorNamed("alice")
+	id := publish(t, s, a, "bye", []string{store.PublicAddress})
+
+	if err := s.DeleteNote(context.Background(), actorNamed("bob"), id); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("delete by other actor: err = %v, want store.ErrNotFound", err)
+	}
+	if err := s.DeleteNote(context.Background(), a, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.GetObject(context.Background(), s.noteID(id)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetObject after delete: err = %v, want store.ErrNotFound", err)
+	}
+	for _, c := range []string{notesID(a), OutboxURI(a), s.publicNotesID()} {
+		if in, _ := s.store.CollectionContains(context.Background(), c, s.noteID(id)); in {
+			t.Errorf("deleted note still in %s", c)
+		}
 	}
 }

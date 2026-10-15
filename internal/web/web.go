@@ -122,6 +122,8 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+a.callback, a.oauthCallback)
 	mux.Handle("POST /logout", csrf.Handler(http.HandlerFunc(a.logout)))
 	mux.Handle("POST /notes", csrf.Handler(http.HandlerFunc(a.postNote)))
+	mux.Handle("POST /notes/{id}/edit", csrf.Handler(a.requireActor(a.editNote)))
+	mux.Handle("POST /notes/{id}/delete", csrf.Handler(a.requireActor(a.deleteNote)))
 	mux.HandleFunc("GET /users/{username}/inbox", a.readInbox)
 	mux.HandleFunc("GET /objects/{id}", a.getObject)
 	mux.Handle("POST /objects", csrf.Handler(a.requireActor(a.ap.ServeCreateObject)))
@@ -330,6 +332,40 @@ func (a *App) postNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := a.ap.PublishNote(r.Context(), actor, text, to, cc); err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/#notes", http.StatusSeeOther)
+}
+
+// editNote replaces the text of one of the user's notes with form field
+// "content". The note's addressing doesn't change.
+func (a *App) editNote(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
+	text := strings.TrimSpace(r.PostFormValue("content"))
+	if text == "" || len([]rune(text)) > maxNoteChars {
+		http.Error(w, fmt.Sprintf("a note must be 1-%d characters", maxNoteChars), http.StatusBadRequest)
+		return
+	}
+	_, err := a.ap.EditNote(r.Context(), actor, r.PathValue("id"), text)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		util.ServerError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/#notes", http.StatusSeeOther)
+}
+
+// deleteNote deletes one of the user's notes.
+func (a *App) deleteNote(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
+	err := a.ap.DeleteNote(r.Context(), actor, r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
 		util.ServerError(w, err)
 		return
 	}
