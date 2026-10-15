@@ -31,3 +31,18 @@ select(location.hash.slice(1));
 // New note dialog.
 const compose = document.getElementById('compose');
 document.getElementById('compose-open').addEventListener('click', () => compose.showModal());
+
+// Edit note dialog: each Edit button carries its note's id and text.
+const edit = document.getElementById('edit');
+for (const b of document.querySelectorAll('[data-edit]')) {
+  b.addEventListener('click', () => {
+    edit.querySelector('form').action = '/notes/' + b.dataset.edit + '/edit';
+    edit.querySelector('textarea').value = b.dataset.text;
+    edit.showModal();
+  });
+}
+
+// Forms that need confirming first, such as Delete.
+for (const f of document.querySelectorAll('form[data-confirm]')) {
+  f.addEventListener('submit', e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+}

@@ -456,7 +456,10 @@ func (a *App) unfollow(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/#following", http.StatusSeeOther)
 }
 
-var htmlTag = regexp.MustCompile(`<[^>]*>`)
+var (
+	htmlTag      = regexp.MustCompile(`<[^>]*>`)
+	paragraphGap = strings.NewReplacer("</p><p>", "\n\n", "<br>", "\n")
+)
 
 // address is one entry in a note's to/cc list as shown on the page.
 type address struct {
@@ -476,11 +479,16 @@ var (
 	//   - plainText: inbox notes come from other servers, so they are only
 	//     shown as plain text: tags are stripped and the result is escaped
 	//     by html/template as usual.
+	//   - noteText: turns a local note's HTML (from textToHTML) back into the
+	//     text it was written from, for the edit form.
 	//   - addresses: labels a to/cc list, naming the public collection and the
 	//     user's followers collection.
 	homeTemplate = template.Must(template.New("home.html").Funcs(template.FuncMap{
 		"noteHTML":  func(s string) template.HTML { return template.HTML(s) }, //nolint:gosec // escaped at write time
 		"plainText": func(s string) string { return html.UnescapeString(htmlTag.ReplaceAllString(s, " ")) },
+		"noteText": func(s string) string {
+			return html.UnescapeString(htmlTag.ReplaceAllString(paragraphGap.Replace(s), ""))
+		},
 		"addresses": func(addrs []string, followersURI string) []address {
 			out := make([]address, 0, len(addrs))
 			for _, a := range addrs {

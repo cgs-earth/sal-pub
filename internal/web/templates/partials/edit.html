@@ -1,0 +1,15 @@
+{{/* The Edit note dialog, opened by the Edit buttons in the outbox (static/app.js), which fill in
+     the text and the form action. Expects the page data. */}}
+{{define "edit"}}
+  <dialog id="edit" aria-labelledby="edit-title">
+    <form method="post">
+      <h2 id="edit-title">Edit note</h2>
+      <textarea name="content" rows="5" maxlength="{{.MaxNoteChars}}" aria-label="Note" required></textarea>
+      <p class="meta">Recipients stay the same. They are sent the new text as an update.</p>
+      <div class="actions">
+        <button type="submit" formmethod="dialog" formnovalidate>Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+{{end}}

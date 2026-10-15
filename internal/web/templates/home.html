@@ -13,7 +13,7 @@
   <h1>sal-pub</h1>
   {{if .Actor}}
     <div class="who"><strong>{{or .Actor.DisplayName .Actor.Username}}</strong> · {{.Handle}}</div>
-    <button class="primary" type="button" id="compose-open">New note</button>
+    <button class="primary" type="button" id="compose-open">New post</button>
     <form method="post" action="/logout"><button>Log out</button></form>
   {{else}}
     <div class="who"></div>
@@ -22,7 +22,6 @@
 </header>
 
 {{if not .Actor}}
-  <p class="intro">Sign in with Keycloak to get an ActivityPub identity that other fediverse servers can follow.</p>
   <h2>Public posts</h2>
   {{template "public-notes" .}}
 {{else}}
@@ -53,7 +52,15 @@
         <div class="meta">to {{template "addresses" addresses .To $.DefaultCC}}
           {{with .CC}}· cc {{template "addresses" addresses . $.DefaultCC}}{{end}}</div>
         <div>{{noteHTML .Content}}</div>
-        <footer><a href="/notes/{{.ID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a></footer>
+        <footer><a href="/notes/{{.ID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a>
+          {{- if not .Updated.IsZero}} · <span title="{{.Updated.Format "2006-01-02 15:04 MST"}}">edited</span>{{end}}
+          <span class="note-actions">
+            <button type="button" class="small" data-edit="{{.ID}}" data-text="{{noteText .Content}}">Edit</button>
+            <form method="post" action="/notes/{{.ID}}/delete" data-confirm="Delete this note? Its recipients' servers are asked to delete it too.">
+              <button class="small danger">Delete</button>
+            </form>
+          </span>
+        </footer>
       </article>
     {{else}}
       <p class="empty">You haven't posted yet. Use <strong>New note</strong> to write one.</p>
@@ -88,6 +95,7 @@
   </section>
 
   {{template "compose" .}}
+  {{template "edit" .}}
 {{end}}
 </main>
 </body>

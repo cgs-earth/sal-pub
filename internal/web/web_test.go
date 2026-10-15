@@ -113,3 +113,31 @@ func TestHomeNoteTimeIsAFooter(t *testing.T) {
 		t.Error("an inbox note's time should be a footer linking to the note")
 	}
 }
+
+func TestHomeOutboxNotesHaveEditAndDelete(t *testing.T) {
+	out := render(t, loggedInData())
+	for _, want := range []string{
+		`data-edit="n1" data-text="hi"`, `action="/notes/n1/delete" data-confirm=`, `<dialog id="edit"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}
+
+func TestHomeMarksEditedNotes(t *testing.T) {
+	data := loggedInData()
+	data["Notes"].([]activitypub.Note)[0].Updated = time.Now()
+	if out := render(t, data); !strings.Contains(out, ">edited</span>") {
+		t.Error("an edited note should say so")
+	}
+}
+
+func TestHomeEditTextReversesNoteHTML(t *testing.T) {
+	data := loggedInData()
+	data["Notes"].([]activitypub.Note)[0].Content = "<p>a &amp; b<br>c</p><p>d</p>"
+	// html/template escapes the text again for the attribute; newlines stay as they are.
+	if out := render(t, data); !strings.Contains(out, "data-text=\"a &amp; b\nc\n\nd\"") {
+		t.Error("the Edit button should carry the note's original text")
+	}
+}

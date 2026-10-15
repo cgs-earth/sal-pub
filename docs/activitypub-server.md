@@ -87,6 +87,7 @@ Fixed values that used to be variables:
 | `GET /login`, `GET /oauth/callback` | Keycloak authorization-code flow with PKCE. |
 | `POST /logout` | Clears the session, then ends the Keycloak SSO session through its end-session endpoint and returns to `SALPUB_HOSTNAME`. |
 | `POST /notes` | Publishes a note. Form fields: `content`, `to`, `cc` (see [Addressing](#addressing)). Session-authenticated and protected against cross-origin posts. |
+| `POST /notes/{id}/edit`, `POST /notes/{id}/delete` | Edits (form field `content`) or deletes one of your own notes (see [Editing and deleting notes](#editing-and-deleting-notes)). Session-authenticated and protected against cross-origin posts. |
 | `GET /.well-known/webfinger?resource=acct:user@host` | WebFinger lookup. |
 | `GET /users/{username}` | Actor (`Person`) with its public key. |
 | `POST /follow`, `POST /unfollow` | Follow or unfollow the actor in form field `target` (see [Following](#following)). Session-authenticated and protected against cross-origin posts. |
@@ -144,6 +145,20 @@ Notes are stored as `Note` objects in the generic object store (see [Objects](#o
 ids `<SALPUB_HOSTNAME>/notes/{id}` and their `to`/`cc` as given. Each note is listed in its author's
 private `<actor>#notes` collection, which the home page reads. Public notes are also listed in the
 author's outbox (`<actor>/outbox`) and in the site-wide `<SALPUB_HOSTNAME>/notes` collection.
+
+## Editing and deleting notes
+
+Each note in the **Outbox** tab has **Edit** and **Delete** buttons. Only a note's author can
+change it.
+
+- **Edit** replaces the note's text. Its addressing stays the same. The note gets an `updated`
+  time, it shows as *edited*, and an `Update{Note}` is sent to the same inboxes as the original
+  `Create`.
+- **Delete** asks for confirmation, removes the note and sends a `Delete` with a `Tombstone` to the
+  same inboxes. Remote servers decide for themselves whether to honor it.
+
+Copies in local users' inboxes are updated or removed directly. Incoming `Update` and `Delete`
+activities from remote servers are not handled yet, so remote notes in your inbox don't change.
 
 ## Following
 
