@@ -39,6 +39,5 @@ docker/keycloak/themes
 .claude/settings.local.json
 CLAUDE.local.md
 
-# Local/runtime data and scratch files (t.json is a realm export containing secrets)
-t.json
+# Local/runtime data and scratch files
 storage/
