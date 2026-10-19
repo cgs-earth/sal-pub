@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/cgs-earth/sal-pub/internal/activitypub"
 	"github.com/cgs-earth/sal-pub/internal/store"
 )
@@ -14,9 +17,7 @@ import (
 func render(t *testing.T, data map[string]any) string {
 	t.Helper()
 	var b strings.Builder
-	if err := homeTemplate.Execute(&b, data); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, homeTemplate.Execute(&b, data))
 	return b.String()
 }
 
@@ -43,13 +44,10 @@ func loggedInData() map[string]any {
 func TestHomeLoggedOutShowsLoginAndPublicPosts(t *testing.T) {
 	out := render(t, map[string]any{"PublicNotes": []activitypub.Note{{ID: "n1", Content: "<p>pub</p>", Author: &store.Actor{Username: "bob"}}}})
 	for _, want := range []string{`href="/login"`, "Public posts", "<p>pub</p>"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q", want)
-		}
+		assert.Contains(t, out, want)
 	}
-	if strings.Contains(out, `role="tablist"`) || strings.Contains(out, "<dialog") {
-		t.Error("logged-out page should have no tabs or compose dialog")
-	}
+	assert.NotContains(t, out, `role="tablist"`, "logged-out page should have no tabs")
+	assert.NotContains(t, out, "<dialog", "logged-out page should have no compose dialog")
 }
 
 func TestHomeLoggedInHasTabsAndComposeDialog(t *testing.T) {
@@ -58,24 +56,19 @@ func TestHomeLoggedInHasTabsAndComposeDialog(t *testing.T) {
 		`role="tablist"`, `aria-controls="inbox"`, `aria-controls="notes"`, `aria-controls="following"`,
 		`<dialog id="compose"`, `action="/notes"`, `id="compose-open"`, `<span class="pill warn">pending</span>`,
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q", want)
-		}
+		assert.Contains(t, out, want)
 	}
 }
 
 func TestHomeShowsAddressesAsPills(t *testing.T) {
 	out := render(t, loggedInData())
-	if !strings.Contains(out, `<span class="pill">public</span>`) || !strings.Contains(out, `<span class="pill">followers</span>`) {
-		t.Error("public and followers addresses should render as pills")
-	}
+	assert.Contains(t, out, `<span class="pill">public</span>`)
+	assert.Contains(t, out, `<span class="pill">followers</span>`)
 }
 
 func TestHomeEscapesInboxContent(t *testing.T) {
 	out := render(t, loggedInData())
-	if strings.Contains(out, "<script>x</script>") {
-		t.Error("remote inbox HTML must not be rendered as HTML")
-	}
+	assert.NotContains(t, out, "<script>x</script>", "remote inbox HTML must not be rendered as HTML")
 }
 
 func TestStaticAssetsServedUnderStatic(t *testing.T) {
@@ -83,35 +76,27 @@ func TestStaticAssetsServedUnderStatic(t *testing.T) {
 	for path, want := range map[string]string{"/static/app.css": "--accent", "/static/app.js": "showModal"} {
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
-			t.Errorf("GET %s: %d, missing %q", path, w.Code, want)
-		}
+		assert.Equal(t, http.StatusOK, w.Code, "GET %s", path)
+		assert.Contains(t, w.Body.String(), want, "GET %s", path)
 	}
 }
 
 func TestHomeSentNotesStartWithAddresses(t *testing.T) {
 	out := render(t, loggedInData())
-	if !strings.Contains(out, `<article class="card">
-        <div class="meta">to <span class="pill">public</span>`) {
-		t.Error("a sent note should start with its to/cc line, with no author line")
-	}
+	assert.Contains(t, out, `<article class="card">
+        <div class="meta">to <span class="pill">public</span>`, "a sent note should start with its to/cc line, with no author line")
 }
 
 func TestHomeAccountListsShowFullURIs(t *testing.T) {
 	out := render(t, loggedInData())
-	if !strings.Contains(out, `<a class="uri" href="https://r.example/u/carol">https://r.example/u/carol</a>`) {
-		t.Error("followers should show the full URI, including the scheme")
-	}
+	assert.Contains(t, out, `<a class="uri" href="https://r.example/u/carol">https://r.example/u/carol</a>`,
+		"followers should show the full URI, including the scheme")
 }
 
 func TestHomeNoteTimeIsAFooter(t *testing.T) {
 	out := render(t, loggedInData())
-	if !strings.Contains(out, `<footer><a href="/notes/n1"><time datetime="`) {
-		t.Error("a sent note's time should be a footer linking to the note")
-	}
-	if !strings.Contains(out, `<footer><a href="https://r.example/n/1"><time datetime="`) {
-		t.Error("an inbox note's time should be a footer linking to the note")
-	}
+	assert.Contains(t, out, `<footer><a href="/notes/n1"><time datetime="`, "a sent note's time should be a footer linking to the note")
+	assert.Contains(t, out, `<footer><a href="https://r.example/n/1"><time datetime="`, "an inbox note's time should be a footer linking to the note")
 }
 
 func TestHomeOutboxNotesHaveEditAndDelete(t *testing.T) {
@@ -119,25 +104,19 @@ func TestHomeOutboxNotesHaveEditAndDelete(t *testing.T) {
 	for _, want := range []string{
 		`data-edit="n1" data-text="hi"`, `action="/notes/n1/delete" data-confirm=`, `<dialog id="edit"`,
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q", want)
-		}
+		assert.Contains(t, out, want)
 	}
 }
 
 func TestHomeMarksEditedNotes(t *testing.T) {
 	data := loggedInData()
 	data["Notes"].([]activitypub.Note)[0].Updated = time.Now()
-	if out := render(t, data); !strings.Contains(out, ">edited</span>") {
-		t.Error("an edited note should say so")
-	}
+	assert.Contains(t, render(t, data), ">edited</span>", "an edited note should say so")
 }
 
 func TestHomeEditTextReversesNoteHTML(t *testing.T) {
 	data := loggedInData()
 	data["Notes"].([]activitypub.Note)[0].Content = "<p>a &amp; b<br>c</p><p>d</p>"
 	// html/template escapes the text again for the attribute; newlines stay as they are.
-	if out := render(t, data); !strings.Contains(out, "data-text=\"a &amp; b\nc\n\nd\"") {
-		t.Error("the Edit button should carry the note's original text")
-	}
+	assert.Contains(t, render(t, data), "data-text=\"a &amp; b\nc\n\nd\"", "the Edit button should carry the note's original text")
 }

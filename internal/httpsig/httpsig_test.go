@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -19,22 +22,14 @@ const (
 func signedRequest(t *testing.T, body []byte) (*http.Request, KeyFetcher) {
 	t.Helper()
 	privatePEM, publicPEM, err := GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	priv, err := ParsePrivateKey(privatePEM)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	pub, err := ParsePublicKey(publicPEM)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	out, _ := http.NewRequest(http.MethodPost, "https://remote.example/users/bob/inbox?x=1", bytes.NewReader(body))
-	if err := Sign(out, testKeyID, priv, body); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, Sign(out, testKeyID, priv, body))
 
 	in := httptest.NewRequest(http.MethodPost, "/users/bob/inbox?x=1", bytes.NewReader(body))
 	in.Host = "remote.example"
@@ -51,20 +46,15 @@ func TestVerifyAcceptsSignedRequest(t *testing.T) {
 	r, fetch := signedRequest(t, body)
 
 	owner, err := Verify(r, body, fetch)
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	if owner != testOwner {
-		t.Fatalf("owner = %q, want %q", owner, testOwner)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, testOwner, owner)
 }
 
 func TestVerifyRejectsTamperedBody(t *testing.T) {
 	r, fetch := signedRequest(t, []byte(`{"type":"Follow"}`))
 
-	if _, err := Verify(r, []byte(`{"type":"Block"}`), fetch); err == nil {
-		t.Fatal("Verify accepted a tampered body")
-	}
+	_, err := Verify(r, []byte(`{"type":"Block"}`), fetch)
+	assert.Error(t, err, "Verify accepted a tampered body")
 }
 
 func TestVerifyRejectsOtherHost(t *testing.T) {
@@ -72,9 +62,8 @@ func TestVerifyRejectsOtherHost(t *testing.T) {
 	r, fetch := signedRequest(t, body)
 	r.Host = "other.example"
 
-	if _, err := Verify(r, body, fetch); err == nil {
-		t.Fatal("Verify accepted a request signed for another host")
-	}
+	_, err := Verify(r, body, fetch)
+	assert.Error(t, err, "Verify accepted a request signed for another host")
 }
 
 func TestVerifyRejectsUnsignedRequest(t *testing.T) {
@@ -82,7 +71,6 @@ func TestVerifyRejectsUnsignedRequest(t *testing.T) {
 	r, fetch := signedRequest(t, body)
 	r.Header.Del("Signature")
 
-	if _, err := Verify(r, body, fetch); err == nil {
-		t.Fatal("Verify accepted an unsigned request")
-	}
+	_, err := Verify(r, body, fetch)
+	assert.Error(t, err, "Verify accepted an unsigned request")
 }

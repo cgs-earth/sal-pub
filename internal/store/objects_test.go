@@ -3,11 +3,12 @@ package store
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"os"
 	"testing"
 
 	vocab "github.com/go-ap/activitypub"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testStore opens and migrates the database in SALPUB_TEST_DATABASE_URL, or
@@ -19,13 +20,9 @@ func testStore(t *testing.T) *Store {
 		t.Skip("SALPUB_TEST_DATABASE_URL not set")
 	}
 	s, err := Open(context.Background(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { s.Close() })
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.Migrate(context.Background()))
 	return s
 }
 
@@ -43,124 +40,83 @@ func testNote(id, content string) *vocab.Object {
 
 func TestCreateThenGetObject(t *testing.T) {
 	s, ctx, id := testStore(t), context.Background(), uniqueID()
-	if err := s.CreateObject(ctx, testNote(id, "hello")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.CreateObject(ctx, testNote(id, "hello")))
 	it, err := s.GetObject(ctx, id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	obj, err := vocab.ToObject(it)
-	if err != nil || !obj.Match(vocab.NoteType) || obj.Content.First().String() != "hello" {
-		t.Errorf("got %+v, %v", it, err)
-	}
+	require.NoError(t, err)
+	assert.True(t, obj.Match(vocab.NoteType))
+	assert.Equal(t, "hello", obj.Content.First().String())
 }
 
 func TestCreateObjectTwiceReturnsErrExists(t *testing.T) {
 	s, ctx, id := testStore(t), context.Background(), uniqueID()
-	if err := s.CreateObject(ctx, testNote(id, "a")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateObject(ctx, testNote(id, "b")); !errors.Is(err, ErrExists) {
-		t.Errorf("got %v, want ErrExists", err)
-	}
+	require.NoError(t, s.CreateObject(ctx, testNote(id, "a")))
+	assert.ErrorIs(t, s.CreateObject(ctx, testNote(id, "b")), ErrExists)
 }
 
 func TestCreateObjectWithoutIDFails(t *testing.T) {
 	s := testStore(t)
-	if err := s.CreateObject(context.Background(), vocab.ObjectNew(vocab.NoteType)); err == nil {
-		t.Error("expected an error for an object without an id")
-	}
+	assert.Error(t, s.CreateObject(context.Background(), vocab.ObjectNew(vocab.NoteType)))
 }
 
 func TestUpdateObjectReplacesData(t *testing.T) {
 	s, ctx, id := testStore(t), context.Background(), uniqueID()
-	if err := s.CreateObject(ctx, testNote(id, "before")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.UpdateObject(ctx, testNote(id, "after")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.CreateObject(ctx, testNote(id, "before")))
+	require.NoError(t, s.UpdateObject(ctx, testNote(id, "after")))
 	it, err := s.GetObject(ctx, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if obj, _ := vocab.ToObject(it); obj.Content.First().String() != "after" {
-		t.Errorf("content = %q, want after", obj.Content.First())
-	}
+	require.NoError(t, err)
+	obj, err := vocab.ToObject(it)
+	require.NoError(t, err)
+	assert.Equal(t, "after", obj.Content.First().String())
 }
 
 func TestUpdateMissingObjectReturnsErrNotFound(t *testing.T) {
 	s := testStore(t)
-	if err := s.UpdateObject(context.Background(), testNote(uniqueID(), "x")); !errors.Is(err, ErrNotFound) {
-		t.Errorf("got %v, want ErrNotFound", err)
-	}
+	assert.ErrorIs(t, s.UpdateObject(context.Background(), testNote(uniqueID(), "x")), ErrNotFound)
 }
 
 func TestDeleteObject(t *testing.T) {
 	s, ctx, id := testStore(t), context.Background(), uniqueID()
-	if err := s.CreateObject(ctx, testNote(id, "x")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DeleteObject(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.GetObject(ctx, id); !errors.Is(err, ErrNotFound) {
-		t.Errorf("get after delete: %v, want ErrNotFound", err)
-	}
-	if err := s.DeleteObject(ctx, id); !errors.Is(err, ErrNotFound) {
-		t.Errorf("second delete: %v, want ErrNotFound", err)
-	}
+	require.NoError(t, s.CreateObject(ctx, testNote(id, "x")))
+	require.NoError(t, s.DeleteObject(ctx, id))
+	_, err := s.GetObject(ctx, id)
+	assert.ErrorIs(t, err, ErrNotFound, "get after delete")
+	assert.ErrorIs(t, s.DeleteObject(ctx, id), ErrNotFound, "second delete")
 }
 
 func TestAddToCollectionAndContains(t *testing.T) {
 	s, ctx, coll, item := testStore(t), context.Background(), uniqueID(), uniqueID()
-	if ok, err := s.CollectionContains(ctx, coll, item); err != nil || ok {
-		t.Fatalf("before add: %v, %v", ok, err)
-	}
-	if err := s.AddToCollection(ctx, coll, item); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AddToCollection(ctx, coll, item); err != nil {
-		t.Fatalf("adding twice: %v", err)
-	}
-	if ok, err := s.CollectionContains(ctx, coll, item); err != nil || !ok {
-		t.Errorf("after add: %v, %v", ok, err)
-	}
+	ok, err := s.CollectionContains(ctx, coll, item)
+	require.NoError(t, err)
+	require.False(t, ok, "before add")
+	require.NoError(t, s.AddToCollection(ctx, coll, item))
+	require.NoError(t, s.AddToCollection(ctx, coll, item), "adding twice")
+	ok, err = s.CollectionContains(ctx, coll, item)
+	require.NoError(t, err)
+	assert.True(t, ok, "after add")
 }
 
 func TestCollectionItemsNewestFirst(t *testing.T) {
 	s, ctx, coll := testStore(t), context.Background(), uniqueID()
 	first, second := uniqueID(), uniqueID()
 	for _, item := range []string{first, second} {
-		if err := s.AddToCollection(ctx, coll, item); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, s.AddToCollection(ctx, coll, item))
 	}
 	var got []string
 	for id, err := range s.CollectionItems(ctx, coll) {
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		got = append(got, id)
 	}
-	if len(got) != 2 || got[0] != second || got[1] != first {
-		t.Errorf("got %q, want [%s %s]", got, second, first)
-	}
+	assert.Equal(t, []string{second, first}, got)
 }
 
 func TestRemoveFromCollection(t *testing.T) {
 	s, ctx, coll, item := testStore(t), context.Background(), uniqueID(), uniqueID()
-	if err := s.AddToCollection(ctx, coll, item); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.RemoveFromCollection(ctx, coll, item); err != nil {
-		t.Fatal(err)
-	}
-	if ok, _ := s.CollectionContains(ctx, coll, item); ok {
-		t.Error("item still in collection after remove")
-	}
-	if err := s.RemoveFromCollection(ctx, coll, item); !errors.Is(err, ErrNotFound) {
-		t.Errorf("second remove: %v, want ErrNotFound", err)
-	}
+	require.NoError(t, s.AddToCollection(ctx, coll, item))
+	require.NoError(t, s.RemoveFromCollection(ctx, coll, item))
+	ok, err := s.CollectionContains(ctx, coll, item)
+	require.NoError(t, err)
+	assert.False(t, ok, "item still in collection after remove")
+	assert.ErrorIs(t, s.RemoveFromCollection(ctx, coll, item), ErrNotFound, "second remove")
 }

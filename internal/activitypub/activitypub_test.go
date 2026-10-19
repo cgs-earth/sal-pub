@@ -3,39 +3,30 @@ package activitypub
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"testing"
 	"time"
 
 	vocab "github.com/go-ap/activitypub"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cgs-earth/sal-pub/internal/store"
 )
 
 func TestSanitizeUsernameEmail(t *testing.T) {
-	if got := sanitizeUsername("Jane.Doe@example.org"); got != "jane_doe" {
-		t.Fatalf("got %q, want jane_doe", got)
-	}
+	assert.Equal(t, "jane_doe", sanitizeUsername("Jane.Doe@example.org"))
 }
 
 func TestSanitizeUsernameTruncates(t *testing.T) {
-	if got := sanitizeUsername("a-very-long-github-login-name-indeed"); len(got) != 26 {
-		t.Fatalf("got %q (%d chars), want 26 chars", got, len(got))
-	}
+	assert.Len(t, sanitizeUsername("a-very-long-github-login-name-indeed"), 26)
 }
 
 func TestSanitizeUsernameEmpty(t *testing.T) {
-	if got := sanitizeUsername("@@@"); got != "user" {
-		t.Fatalf("got %q, want user", got)
-	}
+	assert.Equal(t, "user", sanitizeUsername("@@@"))
 }
 
 func TestTextToHTMLEscapes(t *testing.T) {
-	got := textToHTML("a <b> & c\nnext\n\nsecond")
-	want := "<p>a &lt;b&gt; &amp; c<br>next</p><p>second</p>"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
+	assert.Equal(t, "<p>a &lt;b&gt; &amp; c<br>next</p><p>second</p>", textToHTML("a <b> & c\nnext\n\nsecond"))
 }
 
 func testActor() *store.Actor {
@@ -51,9 +42,7 @@ func testActor() *store.Actor {
 func marshalToMap(t *testing.T, v any) map[string]any {
 	t.Helper()
 	s, err := New(nil, "https://sal.example")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var data []byte
 	switch v := v.(type) {
 	case *store.Actor:
@@ -61,13 +50,9 @@ func marshalToMap(t *testing.T, v any) map[string]any {
 	case *vocab.Note:
 		data, err = marshal(s.createActivity(testActor(), v))
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal(data, &out))
 	return out
 }
 
@@ -81,17 +66,12 @@ func TestActorDocumentHasMastodonFields(t *testing.T) {
 		"inbox":             "https://sal.example/users/alice/inbox",
 		"followers":         "https://sal.example/users/alice/followers",
 	} {
-		if doc[field] != want {
-			t.Errorf("%s = %v, want %q", field, doc[field], want)
-		}
+		assert.Equal(t, want, doc[field], field)
 	}
 	key, _ := doc["publicKey"].(map[string]any)
-	if key["id"] != "https://sal.example/users/alice#main-key" || key["owner"] != doc["id"] {
-		t.Errorf("publicKey = %v", key)
-	}
-	if _, ok := doc["@context"]; !ok {
-		t.Error("missing @context")
-	}
+	assert.Equal(t, "https://sal.example/users/alice#main-key", key["id"])
+	assert.Equal(t, doc["id"], key["owner"])
+	assert.Contains(t, doc, "@context")
 }
 
 func TestCreateActivityWrapsPublicNote(t *testing.T) {
@@ -103,68 +83,51 @@ func TestCreateActivityWrapsPublicNote(t *testing.T) {
 	note.CC = vocab.ItemCollection{vocab.IRI("https://sal.example/users/alice/followers")}
 	doc := marshalToMap(t, note)
 
-	if doc["type"] != "Create" || doc["actor"] != "https://sal.example/users/alice" {
-		t.Fatalf("activity = %v", doc)
-	}
+	require.Equal(t, "Create", doc["type"])
+	require.Equal(t, "https://sal.example/users/alice", doc["actor"])
 	obj, _ := doc["object"].(map[string]any)
-	if obj["type"] != "Note" || obj["id"] != "https://sal.example/notes/N1" || obj["content"] != "<p>hi</p>" {
-		t.Errorf("object = %v", obj)
-	}
-	to, _ := obj["to"].([]any)
-	if len(to) != 1 || to[0] != "https://www.w3.org/ns/activitystreams#Public" {
-		t.Errorf("to = %v", obj["to"])
-	}
-	cc, _ := doc["cc"].([]any)
-	if len(cc) != 1 || cc[0] != "https://sal.example/users/alice/followers" {
-		t.Errorf("activity cc = %v", doc["cc"])
-	}
+	assert.Equal(t, "Note", obj["type"])
+	assert.Equal(t, "https://sal.example/notes/N1", obj["id"])
+	assert.Equal(t, "<p>hi</p>", obj["content"])
+	assert.Equal(t, []any{"https://www.w3.org/ns/activitystreams#Public"}, obj["to"])
+	assert.Equal(t, []any{"https://sal.example/users/alice/followers"}, doc["cc"])
 }
 
 func TestParseAddressesPublicShorthandAndDedupe(t *testing.T) {
 	got, err := ParseAddresses("public, https://remote.example/users/bob\nas:Public https://remote.example/users/bob")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{store.PublicAddress, "https://remote.example/users/bob"}
-	if !slices.Equal(got, want) {
-		t.Errorf("got %q, want %q", got, want)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []string{store.PublicAddress, "https://remote.example/users/bob"}, got)
 }
 
 func TestParseAddressesEmpty(t *testing.T) {
 	got, err := ParseAddresses("  ,  ")
-	if err != nil || len(got) != 0 {
-		t.Errorf("got %q, %v; want no addresses", got, err)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, got)
 }
 
 func TestParseAddressesRejectsHandle(t *testing.T) {
-	if _, err := ParseAddresses("@bob@remote.example"); err == nil {
-		t.Error("expected an error for a bare handle")
-	}
+	_, err := ParseAddresses("@bob@remote.example")
+	assert.Error(t, err, "expected an error for a bare handle")
 }
 
 func TestResolveActorURILocalHandle(t *testing.T) {
 	s, _ := New(nil, "https://sal.example")
 	got, err := s.resolveActorURI(context.Background(), "@Bob@sal.example")
-	if err != nil || got != "https://sal.example/users/bob" {
-		t.Errorf("got %q, %v", got, err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "https://sal.example/users/bob", got)
 }
 
 func TestResolveActorURIPassesURLThrough(t *testing.T) {
 	s, _ := New(nil, "https://sal.example")
 	got, err := s.resolveActorURI(context.Background(), " https://remote.example/users/bob ")
-	if err != nil || got != "https://remote.example/users/bob" {
-		t.Errorf("got %q, %v", got, err)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "https://remote.example/users/bob", got)
 }
 
 func TestResolveActorURIRejectsBareName(t *testing.T) {
 	s, _ := New(nil, "https://sal.example")
-	if _, err := s.resolveActorURI(context.Background(), "bob"); err == nil {
-		t.Error("expected an error for a name without a host")
-	}
+	_, err := s.resolveActorURI(context.Background(), "bob")
+	assert.Error(t, err, "expected an error for a name without a host")
 }
 
 func remoteCreate(noteID, attributedTo string) *vocab.Create {
@@ -180,23 +143,20 @@ func remoteCreate(noteID, attributedTo string) *vocab.Create {
 func TestReceiveNoteRejectsBareIRI(t *testing.T) {
 	s, _ := New(nil, "https://sal.example")
 	create := vocab.CreateNew("https://remote.example/notes/1#create", vocab.IRI("https://remote.example/notes/1"))
-	if err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create); err == nil {
-		t.Error("expected an error for a non-embedded object")
-	}
+	err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create)
+	assert.Error(t, err, "expected an error for a non-embedded object")
 }
 
 func TestReceiveNoteRejectsNoteAttributedToSomeoneElse(t *testing.T) {
 	s, _ := New(nil, "https://sal.example")
 	create := remoteCreate("https://remote.example/notes/1", "https://remote.example/users/carol")
-	if err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create); err == nil {
-		t.Error("expected an error for a note not attributed to the signer")
-	}
+	err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create)
+	assert.Error(t, err, "expected an error for a note not attributed to the signer")
 }
 
 func TestReceiveNoteRejectsNoteOnAnotherHost(t *testing.T) {
 	s, _ := New(nil, "https://sal.example")
 	create := remoteCreate("https://elsewhere.example/notes/1", "https://remote.example/users/bob")
-	if err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create); err == nil {
-		t.Error("expected an error for a note hosted on another server")
-	}
+	err := s.receiveNote(context.Background(), testActor(), "https://remote.example/users/bob", create)
+	assert.Error(t, err, "expected an error for a note hosted on another server")
 }
