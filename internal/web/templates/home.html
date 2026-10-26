@@ -46,7 +46,7 @@
     {{end}}
   </section>
 
-  <section role="tabpanel" id="notes" aria-labelledby="tab-notes">
+  <section role="tabpanel" id="notes" aria-labelledby="tab-notes" data-outbox="/users/{{.Actor.Username}}/outbox">
     {{range .Notes}}
       <article class="card">
         <div class="meta">to {{template "addresses" addresses .To $.DefaultCC}}
@@ -55,10 +55,8 @@
         <footer><a href="/notes/{{.ID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a>
           {{- if not .Updated.IsZero}} · <span title="{{.Updated.Format "2006-01-02 15:04 MST"}}">edited</span>{{end}}
           <span class="note-actions">
-            <button type="button" class="small" data-edit="{{.ID}}" data-text="{{noteText .Content}}">Edit</button>
-            <form method="post" action="/notes/{{.ID}}/delete" data-confirm="Delete this note? Its recipients' servers are asked to delete it too.">
-              <button class="small danger">Delete</button>
-            </form>
+            <button type="button" class="small" data-edit="{{.URI}}" data-text="{{plainText .Content}}">Edit</button>
+            <button type="button" class="small danger" data-delete="{{.URI}}">Delete</button>
           </span>
         </footer>
       </article>

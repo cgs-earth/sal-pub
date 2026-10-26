@@ -117,16 +117,15 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /login", a.login)
 	mux.HandleFunc("GET "+a.callback, a.oauthCallback)
 	mux.Handle("POST /logout", csrf.Handler(http.HandlerFunc(a.logout)))
-	mux.Handle("POST /notes", csrf.Handler(http.HandlerFunc(a.postNote)))
-	mux.Handle("POST /notes/{id}/edit", csrf.Handler(a.requireActor(a.editNote)))
-	mux.Handle("POST /notes/{id}/delete", csrf.Handler(a.requireActor(a.deleteNote)))
+	mux.Handle("POST /notes", csrf.Handler(a.requireActor(a.postNote)))
 	mux.HandleFunc("GET /users/{username}/inbox", a.readInbox)
+	mux.Handle("POST /users/{username}/outbox", csrf.Handler(a.requireActor(a.postOutbox)))
 	mux.HandleFunc("GET /objects/{id}", a.getObject)
 	mux.Handle("POST /objects", csrf.Handler(a.requireActor(a.ap.ServeCreateObject)))
 	mux.Handle("PUT /objects/{id}", csrf.Handler(a.requireActor(a.ap.ServeUpdateObject)))
 	mux.Handle("DELETE /objects/{id}", csrf.Handler(a.requireActor(a.ap.ServeDeleteObject)))
-	mux.Handle("POST /follow", csrf.Handler(http.HandlerFunc(a.follow)))
-	mux.Handle("POST /unfollow", csrf.Handler(http.HandlerFunc(a.unfollow)))
+	mux.Handle("POST /follow", csrf.Handler(a.requireActor(a.follow)))
+	mux.Handle("POST /unfollow", csrf.Handler(a.requireActor(a.unfollow)))
 }
 
 // currentActor returns the logged-in user's actor, or nil if not logged in.
@@ -297,22 +296,20 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, a.endSessionURL+"?"+params.Encode(), http.StatusSeeOther)
 }
 
-func (a *App) postNote(w http.ResponseWriter, r *http.Request) {
-	actor, err := a.currentActor(r)
-	if err != nil {
+// The form routes below are thin wrappers: each builds an activity and posts
+// it to the user's outbox through activitypub.PostOutbox.
+
+// post performs act as actor and redirects to back, or replies with the error.
+func (a *App) post(w http.ResponseWriter, r *http.Request, actor *store.Actor, act vocab.Item, back string) {
+	if _, err := a.ap.PostOutbox(r.Context(), actor, act); err != nil {
 		util.ServerError(w, err)
 		return
 	}
-	if actor == nil {
-		http.Error(w, "log in first", http.StatusUnauthorized)
-		return
-	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
 
-	text := strings.TrimSpace(r.PostFormValue("content"))
-	if text == "" || len([]rune(text)) > maxNoteChars {
-		http.Error(w, fmt.Sprintf("a note must be 1-%d characters", maxNoteChars), http.StatusBadRequest)
-		return
-	}
+// postNote publishes a note from form fields "content", "to" and "cc".
+func (a *App) postNote(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
 	to, err := activitypub.ParseAddresses(r.PostFormValue("to"))
 	if err != nil {
 		http.Error(w, "To: "+err.Error(), http.StatusBadRequest)
@@ -323,49 +320,18 @@ func (a *App) postNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "CC: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if len(to) == 0 && len(cc) == 0 {
-		http.Error(w, "a note needs at least one recipient in To or CC", http.StatusBadRequest)
-		return
+	note := vocab.ObjectNew(vocab.NoteType)
+	note.Source = vocab.Source{
+		Content:   vocab.DefaultNaturalLanguage(r.PostFormValue("content")),
+		MediaType: "text/plain",
 	}
-	if _, err := a.ap.PublishNote(r.Context(), actor, text, to, cc); err != nil {
-		util.ServerError(w, err)
-		return
+	for _, iri := range to {
+		note.To = append(note.To, vocab.IRI(iri))
 	}
-	http.Redirect(w, r, "/#notes", http.StatusSeeOther)
-}
-
-// editNote replaces the text of one of the user's notes with form field
-// "content". The note's addressing doesn't change.
-func (a *App) editNote(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
-	text := strings.TrimSpace(r.PostFormValue("content"))
-	if text == "" || len([]rune(text)) > maxNoteChars {
-		http.Error(w, fmt.Sprintf("a note must be 1-%d characters", maxNoteChars), http.StatusBadRequest)
-		return
+	for _, iri := range cc {
+		note.CC = append(note.CC, vocab.IRI(iri))
 	}
-	_, err := a.ap.EditNote(r.Context(), actor, r.PathValue("id"), text)
-	if errors.Is(err, store.ErrNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		util.ServerError(w, err)
-		return
-	}
-	http.Redirect(w, r, "/#notes", http.StatusSeeOther)
-}
-
-// deleteNote deletes one of the user's notes.
-func (a *App) deleteNote(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
-	err := a.ap.DeleteNote(r.Context(), actor, r.PathValue("id"))
-	if errors.Is(err, store.ErrNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		util.ServerError(w, err)
-		return
-	}
-	http.Redirect(w, r, "/#notes", http.StatusSeeOther)
+	a.post(w, r, actor, vocab.CreateNew("", note), "/#notes")
 }
 
 // requireActor wraps a handler that needs the logged-in user's actor,
@@ -415,44 +381,31 @@ func (a *App) readInbox(w http.ResponseWriter, r *http.Request) {
 }
 
 // follow sends a Follow to the actor URL or @user@host handle in "target".
-func (a *App) follow(w http.ResponseWriter, r *http.Request) {
-	actor, err := a.currentActor(r)
-	if err != nil {
+func (a *App) follow(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
+	target := vocab.IRI(strings.TrimSpace(r.PostFormValue("target")))
+	a.post(w, r, actor, vocab.FollowNew("", target), "/#following")
+}
+
+// unfollow undoes the user's Follow of the actor URI in "target". Not
+// following it isn't an error.
+func (a *App) unfollow(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
+	undo := vocab.UndoNew("", vocab.FollowNew("", vocab.IRI(r.PostFormValue("target"))))
+	if _, err := a.ap.PostOutbox(r.Context(), actor, undo); err != nil && !errors.Is(err, store.ErrNotFound) {
 		util.ServerError(w, err)
-		return
-	}
-	if actor == nil {
-		http.Error(w, "log in first", http.StatusUnauthorized)
-		return
-	}
-	target := strings.TrimSpace(r.PostFormValue("target"))
-	if _, err := a.ap.Follow(r.Context(), actor, target); err != nil {
-		log.Printf("follow %q: %v", target, err)
-		http.Error(w, fmt.Sprintf("could not follow %s: %v", target, err), http.StatusBadGateway)
 		return
 	}
 	http.Redirect(w, r, "/#following", http.StatusSeeOther)
 }
 
-func (a *App) unfollow(w http.ResponseWriter, r *http.Request) {
-	actor, err := a.currentActor(r)
-	if err != nil {
-		util.ServerError(w, err)
-		return
-	}
-	if actor == nil {
-		http.Error(w, "log in first", http.StatusUnauthorized)
-		return
-	}
-	err = a.ap.Unfollow(r.Context(), actor, r.PostFormValue("target"))
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		util.ServerError(w, err)
+// postOutbox lets a logged-in user post an activity to their own outbox
+// (ActivityPub client-to-server). It uses the browser session, so it is
+// protected against cross-origin requests like the forms.
 func (a *App) postOutbox(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
 	if actor.Username != r.PathValue("username") {
 		http.Error(w, "this is not your outbox", http.StatusForbidden)
 		return
 	}
-	http.Redirect(w, r, "/#following", http.StatusSeeOther)
+	a.ap.ServePostOutbox(w, r, actor)
 }
 
 // address is one entry in a note's to/cc list as shown on the page.

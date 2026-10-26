@@ -32,17 +32,48 @@ select(location.hash.slice(1));
 const compose = document.getElementById('compose');
 document.getElementById('compose-open').addEventListener('click', () => compose.showModal());
 
+// Editing and deleting a note post an Update or Delete activity to the
+// user's outbox, then reload the page. Errors are shown in an alert.
+const outbox = document.getElementById('notes').dataset.outbox;
+async function postActivity(activity) {
+  const res = await fetch(outbox, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/activity+json' },
+    body: JSON.stringify({ '@context': 'https://www.w3.org/ns/activitystreams', ...activity }),
+  });
+  if (!res.ok) {
+    alert(await res.text() || res.statusText);
+    return;
+  }
+  location.reload();
+}
+
 // Edit note dialog: each Edit button carries its note's id and text.
 const edit = document.getElementById('edit');
+const editForm = edit.querySelector('form');
 for (const b of document.querySelectorAll('[data-edit]')) {
   b.addEventListener('click', () => {
-    edit.querySelector('form').action = '/notes/' + b.dataset.edit + '/edit';
+    editForm.dataset.note = b.dataset.edit;
     edit.querySelector('textarea').value = b.dataset.text;
     edit.showModal();
   });
 }
+editForm.addEventListener('submit', e => {
+  if (e.submitter && e.submitter.formMethod === 'dialog') return;
+  e.preventDefault();
+  postActivity({
+    type: 'Update',
+    object: {
+      id: editForm.dataset.note, type: 'Note',
+      source: { content: edit.querySelector('textarea').value, mediaType: 'text/plain' },
+    },
+  });
+});
 
-// Forms that need confirming first, such as Delete.
-for (const f of document.querySelectorAll('form[data-confirm]')) {
-  f.addEventListener('submit', e => { if (!confirm(f.dataset.confirm)) e.preventDefault(); });
+for (const b of document.querySelectorAll('[data-delete]')) {
+  b.addEventListener('click', () => {
+    if (confirm("Delete this note? Its recipients' servers are asked to delete it too.")) {
+      postActivity({ type: 'Delete', object: b.dataset.delete });
+    }
+  });
 }
