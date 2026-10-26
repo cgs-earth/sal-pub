@@ -8,15 +8,14 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"html"
 	"html/template"
 	"log"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	vocab "github.com/go-ap/activitypub"
 	"github.com/gorilla/sessions"
 	"golang.org/x/oauth2"
 
@@ -451,15 +450,13 @@ func (a *App) unfollow(w http.ResponseWriter, r *http.Request) {
 	err = a.ap.Unfollow(r.Context(), actor, r.PostFormValue("target"))
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		util.ServerError(w, err)
+func (a *App) postOutbox(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
+	if actor.Username != r.PathValue("username") {
+		http.Error(w, "this is not your outbox", http.StatusForbidden)
 		return
 	}
 	http.Redirect(w, r, "/#following", http.StatusSeeOther)
 }
-
-var (
-	htmlTag      = regexp.MustCompile(`<[^>]*>`)
-	paragraphGap = strings.NewReplacer("</p><p>", "\n\n", "<br>", "\n")
-)
 
 // address is one entry in a note's to/cc list as shown on the page.
 type address struct {
@@ -476,19 +473,15 @@ var (
 	// homeTemplate renders templates/home.html, with the partials it uses.
 	//   - noteHTML: note content that activitypub.PublishNote built from
 	//     escaped text, so it is safe to render as HTML.
-	//   - plainText: inbox notes come from other servers, so they are only
-	//     shown as plain text: tags are stripped and the result is escaped
-	//     by html/template as usual.
-	//   - noteText: turns a local note's HTML (from textToHTML) back into the
-	//     text it was written from, for the edit form.
+	//   - plainText: note HTML as plain text (activitypub.HTMLToText), escaped
+	//     by html/template as usual. Inbox notes come from other servers, so
+	//     they are only shown this way. For a local note it gives the text it
+	//     was written from, for the edit form.
 	//   - addresses: labels a to/cc list, naming the public collection and the
 	//     user's followers collection.
 	homeTemplate = template.Must(template.New("home.html").Funcs(template.FuncMap{
 		"noteHTML":  func(s string) template.HTML { return template.HTML(s) }, //nolint:gosec // escaped at write time
-		"plainText": func(s string) string { return html.UnescapeString(htmlTag.ReplaceAllString(s, " ")) },
-		"noteText": func(s string) string {
-			return html.UnescapeString(htmlTag.ReplaceAllString(paragraphGap.Replace(s), ""))
-		},
+		"plainText": activitypub.HTMLToText,
 		"addresses": func(addrs []string, followersURI string) []address {
 			out := make([]address, 0, len(addrs))
 			for _, a := range addrs {

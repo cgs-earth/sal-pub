@@ -160,6 +160,8 @@ func FollowersURI(a *store.Actor) string {
 	return a.ActorURI + "/followers"
 }
 
+// textToHTML renders plain text as note HTML: blank-line separated paragraphs
+// become <p> elements and single newlines <br>, with the text escaped.
 func textToHTML(text string) string {
 	var paragraphs []string
 	for _, p := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n\n") {
@@ -168,6 +170,24 @@ func textToHTML(text string) string {
 		}
 	}
 	return strings.Join(paragraphs, "")
+}
+
+var (
+	htmlTag = regexp.MustCompile(`<[^>]*>`)
+	// Paragraph and line breaks, allowing the attributes, self-closing <br/>
+	// and whitespace that remote servers' HTML has.
+	paragraphGap = regexp.MustCompile(`(?i)</p>\s*<p[^>]*>`)
+	lineBreak    = regexp.MustCompile(`(?i)<br\s*/?>`)
+)
+
+// HTMLToText turns note HTML into plain text: paragraph breaks become a blank
+// line, <br> a newline, other tags are removed and entities are decoded. For
+// HTML built by textToHTML it returns the original text. The result is not
+// HTML-safe; it must be escaped again before it is shown.
+func HTMLToText(s string) string {
+	s = paragraphGap.ReplaceAllString(s, "\n\n")
+	s = lineBreak.ReplaceAllString(s, "\n")
+	return html.UnescapeString(htmlTag.ReplaceAllString(s, ""))
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +374,7 @@ func (s *Server) publicNotes(w http.ResponseWriter, r *http.Request) {
 
 // note serves a single local note.
 func (s *Server) note(w http.ResponseWriter, r *http.Request) {
-	it, err := s.store.GetObject(r.Context(), s.noteID(r.PathValue("id")))
+	it, err := s.store.GetObject(r.Context(), s.NoteURI(r.PathValue("id")))
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return

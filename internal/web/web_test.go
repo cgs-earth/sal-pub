@@ -29,13 +29,13 @@ func loggedInData() map[string]any {
 		"Handle":    "@alice@sal.example",
 		"NoteCount": 1,
 		"Notes": []activitypub.Note{{
-			ID: "n1", Content: "<p>hi</p>", Published: time.Now(),
+			ID: "n1", URI: "https://sal.example/notes/n1", Content: "<p>hi</p>", Published: time.Now(),
 			To: []string{store.PublicAddress}, CC: []string{followers},
 		}},
 		"Inbox":        []store.InboxNote{{ObjectID: "https://r.example/n/1", AttributedTo: "https://r.example/u/bob", Content: "<p>hello <script>x</script></p>"}},
 		"Following":    []activitypub.FollowStatus{{TargetURI: "https://r.example/u/bob", Accepted: false}},
 		"Followers":    []string{"https://r.example/u/carol"},
-		"MaxNoteChars": maxNoteChars,
+		"MaxNoteChars": activitypub.MaxNoteChars,
 		"DefaultTo":    "public",
 		"DefaultCC":    followers,
 	}
@@ -102,7 +102,8 @@ func TestHomeNoteTimeIsAFooter(t *testing.T) {
 func TestHomeOutboxNotesHaveEditAndDelete(t *testing.T) {
 	out := render(t, loggedInData())
 	for _, want := range []string{
-		`data-edit="n1" data-text="hi"`, `action="/notes/n1/delete" data-confirm=`, `<dialog id="edit"`,
+		`data-outbox="/users/alice/outbox"`, `data-edit="https://sal.example/notes/n1" data-text="hi"`,
+		`data-delete="https://sal.example/notes/n1"`, `<dialog id="edit"`,
 	} {
 		assert.Contains(t, out, want)
 	}

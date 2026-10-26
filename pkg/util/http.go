@@ -1,17 +1,41 @@
 package util
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 )
 
-// ServerError logs err and replies with a generic 500, so internal details
-// never reach the client.
+// Errors that ServerError reports with their own status. Wrap them to add a
+// message for the client: fmt.Errorf("%w: note is empty", util.ErrBadRequest).
+var (
+	ErrBadRequest = errors.New("bad request")
+	ErrForbidden  = errors.New("forbidden")
+	ErrNotFound   = errors.New("not found")
+	ErrBadGateway = errors.New("bad gateway")
+)
+
+// ServerError replies to a failed request. Errors wrapping ErrBadRequest,
+// ErrForbidden or ErrBadGateway are sent with their message and status, and
+// ErrNotFound as a plain 404. Anything else is logged and gets a generic 500,
+// so internal details never reach the client.
 func ServerError(w http.ResponseWriter, err error) {
-	log.Printf("error: %v", err)
-	http.Error(w, "internal server error", http.StatusInternalServerError)
+	switch {
+	case errors.Is(err, ErrBadRequest):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, ErrForbidden):
+		http.Error(w, err.Error(), http.StatusForbidden)
+	case errors.Is(err, ErrNotFound):
+		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, ErrBadGateway):
+		log.Printf("error: %v", err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+	default:
+		log.Printf("error: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
 }
 
 // LogRequests is middleware that logs each request's method, URI and duration.

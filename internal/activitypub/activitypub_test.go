@@ -29,6 +29,17 @@ func TestTextToHTMLEscapes(t *testing.T) {
 	assert.Equal(t, "<p>a &lt;b&gt; &amp; c<br>next</p><p>second</p>", textToHTML("a <b> & c\nnext\n\nsecond"))
 }
 
+func TestHTMLToTextReversesTextToHTML(t *testing.T) {
+	text := "a <b> & c\nnext\n\nsecond"
+	assert.Equal(t, text, HTMLToText(textToHTML(text)))
+}
+
+func TestHTMLToTextHandlesRemoteHTML(t *testing.T) {
+	in := `<p class="x">hi <span class="h-card"><a href="https://r.example/@bob">@<span>bob</span></a></span></p>
+<P>line<br />two</P><script>x</script>`
+	assert.Equal(t, "hi @bob\n\nline\ntwox", HTMLToText(in))
+}
+
 func testActor() *store.Actor {
 	return &store.Actor{
 		Username:     "alice",

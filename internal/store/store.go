@@ -14,10 +14,11 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/cgs-earth/sal-pub/migrations"
+	"github.com/cgs-earth/sal-pub/pkg/util"
 )
 
 var (
-	ErrNotFound      = errors.New("not found")
+	ErrNotFound      = util.ErrNotFound // so util.ServerError replies 404
 	ErrUsernameTaken = errors.New("username taken")
 )
 
