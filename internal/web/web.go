@@ -24,10 +24,7 @@ import (
 	"github.com/cgs-earth/sal-pub/pkg/util"
 )
 
-const (
-	sessionName  = "salpub"
-	maxNoteChars = 5000
-)
+const sessionName = "salpub"
 
 type Config struct {
 	Issuer string // e.g. http://localhost/auth/realms/sal
@@ -187,7 +184,7 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		data["Notes"] = notes
 		data["NoteCount"] = total
 		data["Followers"] = followers
-		data["MaxNoteChars"] = maxNoteChars
+		data["MaxNoteChars"] = activitypub.MaxNoteChars
 		data["DefaultTo"] = "public"
 		data["DefaultCC"] = activitypub.FollowersURI(actor)
 	}

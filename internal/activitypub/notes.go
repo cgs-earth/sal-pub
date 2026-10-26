@@ -32,7 +32,8 @@ func (s *Server) publicNotesID() string {
 	return s.baseURL + "/notes"
 }
 
-func (s *Server) noteID(id string) string {
+// NoteURI returns the IRI of the local note /notes/{id}.
+func (s *Server) NoteURI(id string) string {
 	return s.baseURL + "/notes/" + id
 }
 
@@ -51,6 +52,7 @@ func isPublic(note *vocab.Note) bool {
 // Note is a local note as shown on the home page.
 type Note struct {
 	ID        string // the {id} in /notes/{id}
+	URI       string // the note's full id
 	Content   string // HTML built by textToHTML
 	Published time.Time
 	Updated   time.Time // zero if the note was never edited
@@ -61,7 +63,8 @@ type Note struct {
 // noteView converts a stored Note object for the home page.
 func (s *Server) noteView(note *vocab.Note) Note {
 	n := Note{
-		ID:        note.ID.String()[len(s.noteID("")):],
+		ID:        note.ID.String()[len(s.NoteURI("")):],
+		URI:       note.ID.String(),
 		Published: note.Published,
 		Updated:   note.Updated,
 	}
@@ -127,7 +130,7 @@ func (s *Server) PublicNotes(ctx context.Context, limit int) ([]Note, error) {
 // to their inboxes.
 func (s *Server) PublishNote(ctx context.Context, a *store.Actor, text string, to, cc []string) (*vocab.Note, error) {
 	note := vocab.ObjectNew(vocab.NoteType)
-	note.ID = vocab.IRI(s.noteID(rand.Text()))
+	note.ID = vocab.IRI(s.NoteURI(rand.Text()))
 	note.AttributedTo = vocab.IRI(a.ActorURI)
 	note.Content = vocab.DefaultNaturalLanguage(textToHTML(text))
 	note.Published = time.Now().UTC().Truncate(time.Second)
@@ -152,85 +155,4 @@ func (s *Server) PublishNote(ctx context.Context, a *store.Actor, text string, t
 	}
 	go s.deliverNote(a, note, payload, true)
 	return note, nil
-}
-
-// ownNote loads the note /notes/{id}, or returns store.ErrNotFound if there
-// is none or a isn't its author.
-func (s *Server) ownNote(ctx context.Context, a *store.Actor, id string) (*vocab.Note, error) {
-	it, err := s.store.GetObject(ctx, s.noteID(id))
-	if err != nil {
-		return nil, err
-	}
-	note, err := vocab.ToObject(it)
-	if err != nil || note.Type != vocab.NoteType || vocab.IsNil(note.AttributedTo) ||
-		note.AttributedTo.GetLink().String() != a.ActorURI {
-		return nil, store.ErrNotFound
-	}
-	return note, nil
-}
-
-// EditNote replaces the text of one of a's notes, updates local inbox copies
-// and sends an Update to the note's recipients. It returns store.ErrNotFound
-// if a has no note with that id.
-func (s *Server) EditNote(ctx context.Context, a *store.Actor, id, text string) (*vocab.Note, error) {
-	note, err := s.ownNote(ctx, a, id)
-	if err != nil {
-		return nil, err
-	}
-	note.Content = vocab.DefaultNaturalLanguage(textToHTML(text))
-	note.Updated = time.Now().UTC().Truncate(time.Second)
-	if err := s.store.UpdateObject(ctx, note); err != nil {
-		return nil, err
-	}
-	if err := s.store.UpdateInboxNotes(ctx, note.ID.String(), note.Content.First().String()); err != nil {
-		return nil, err
-	}
-
-	update := vocab.UpdateNew(vocab.IRI(fmt.Sprintf("%s#update-%d", note.ID, note.Updated.Unix())), note)
-	update.Actor = vocab.IRI(a.ActorURI)
-	update.Published = note.Updated
-	update.To = note.To
-	update.CC = note.CC
-	payload, err := marshal(update)
-	if err != nil {
-		return nil, fmt.Errorf("encode Update: %w", err)
-	}
-	go s.deliverNote(a, note, payload, false)
-	return note, nil
-}
-
-// DeleteNote deletes one of a's notes, removes it from local inboxes and
-// sends a Delete to the note's recipients. It returns store.ErrNotFound if a
-// has no note with that id.
-func (s *Server) DeleteNote(ctx context.Context, a *store.Actor, id string) error {
-	note, err := s.ownNote(ctx, a, id)
-	if err != nil {
-		return err
-	}
-	if err := s.store.DeleteObject(ctx, note.ID.String()); err != nil {
-		return err
-	}
-	for _, c := range s.noteCollections(a, note) {
-		if err := s.store.RemoveFromCollection(ctx, c, note.ID.String()); err != nil && !errors.Is(err, store.ErrNotFound) {
-			return err
-		}
-	}
-	if err := s.store.DeleteInboxNotes(ctx, note.ID.String()); err != nil {
-		return err
-	}
-
-	tombstone := &vocab.Tombstone{
-		ID: note.ID, Type: vocab.TombstoneType, FormerType: vocab.NoteType,
-		Deleted: time.Now().UTC().Truncate(time.Second),
-	}
-	del := vocab.DeleteNew(note.ID+"#delete", tombstone)
-	del.Actor = vocab.IRI(a.ActorURI)
-	del.To = note.To
-	del.CC = note.CC
-	payload, err := marshal(del)
-	if err != nil {
-		return fmt.Errorf("encode Delete: %w", err)
-	}
-	go s.deliverNote(a, note, payload, false)
-	return nil
 }

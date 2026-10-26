@@ -87,12 +87,12 @@ Fixed values that used to be variables:
 | `GET /login`, `GET /oauth/callback` | Keycloak authorization-code flow with PKCE. |
 | `POST /logout` | Clears the session, then ends the Keycloak SSO session through its end-session endpoint and returns to `SALPUB_HOSTNAME`. |
 | `POST /notes` | Publishes a note. Form fields: `content`, `to`, `cc` (see [Addressing](#addressing)). Session-authenticated and protected against cross-origin posts. |
-| `POST /notes/{id}/edit`, `POST /notes/{id}/delete` | Edits (form field `content`) or deletes one of your own notes (see [Editing and deleting notes](#editing-and-deleting-notes)). Session-authenticated and protected against cross-origin posts. |
 | `GET /.well-known/webfinger?resource=acct:user@host` | WebFinger lookup. |
 | `GET /users/{username}` | Actor (`Person`) with its public key. |
 | `POST /follow`, `POST /unfollow` | Follow or unfollow the actor in form field `target` (see [Following](#following)). Session-authenticated and protected against cross-origin posts. |
 | `POST /users/{username}/inbox` | Accepts `Follow`, `Undo{Follow}`, `Accept`/`Reject` of the user's own follows, and `Create{Note}` (see [Inbox](#inbox)). Requires a valid HTTP Signature. |
 | `GET /users/{username}/outbox` | Latest 50 public `Create{Note}` activities. |
+| `POST /users/{username}/outbox` | Performs an activity as you (client-to-server; see [Posting to the outbox](#posting-to-the-outbox)). Session-authenticated and protected against cross-origin posts. |
 | `GET /users/{username}/followers`, `/following` | Collections. `following` lists accepted follows only. |
 | `GET /notes` | Latest 50 public notes from all users, as an `OrderedCollection` of `Note` objects. |
 | `GET /notes/{id}` | A single public note (404 for non-public notes). |
@@ -148,8 +148,9 @@ author's outbox (`<actor>/outbox`) and in the site-wide `<SALPUB_HOSTNAME>/notes
 
 ## Editing and deleting notes
 
-Each note in the **Outbox** tab has **Edit** and **Delete** buttons. Only a note's author can
-change it.
+Each note in the **Outbox** tab has **Edit** and **Delete** buttons. They post an `Update` or
+`Delete` activity to your outbox (see [Posting to the outbox](#posting-to-the-outbox)), the same
+as any other client would. Only a note's author can change it.
 
 - **Edit** replaces the note's text. Its addressing stays the same. The note gets an `updated`
   time, it shows as *edited*, and an `Update{Note}` is sent to the same inboxes as the original
@@ -224,6 +225,33 @@ home page, and changes to them aren't federated. Requests use the browser sessio
 | `DELETE /objects/{id}` | `204`. Author only. |
 
 These objects are stored, not federated: no `Create`, `Update` or `Delete` activity is sent.
+
+## Posting to the outbox
+
+Logged-in users can post activities as JSON to their own outbox, `POST /users/{username}/outbox`
+(ActivityPub client-to-server). The request uses the browser session, and must be same-origin like
+the forms. The server assigns ids and replies `201` with the activity as performed, and its id in
+the `Location` header.
+
+| Activity | What happens |
+|---|---|
+| `Create{Note}` | Published and delivered like a note from the home page. `to`/`cc` of the activity and the note are merged; at least one is required. |
+| `Create{other object}` | Stored at `/objects/{id}` (see [Objects](#objects)), not federated. |
+| `Update{object}` | Edits one of your notes (text only; its addressing stays the same) or replaces one of your objects. The object must be embedded, have its `id` and keep its `type`. |
+| `Delete` | Deletes one of your notes or objects, by id. The returned activity's object is a `Tombstone`. |
+| `Follow` | Follows the actor URL or `@user@host` handle in `object` (see [Following](#following)). |
+| `Undo{Follow}` | Unfollows. The object is either the `Follow`'s id or a `Follow` whose `object` is the actor. |
+
+A bare object is treated as `Create{object}`. An `actor`, if given, must be you. Other activity types
+are rejected with `400`. Changing another user's note or object gives `403`.
+
+Note text is taken from `source` when its `mediaType` is `text/plain`, and otherwise from `content`
+with the HTML removed. Either way it's limited to 5000 characters and rendered by the server, so
+clients can't put their own HTML in a note.
+
+The home page's forms (`POST /notes`, `/follow` and `/unfollow`) build these activities and go
+through the same code. Its Edit and Delete buttons post `Update` and `Delete` activities to the
+outbox directly.
 
 ## Federating with real servers
 

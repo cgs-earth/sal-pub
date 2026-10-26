@@ -204,117 +204,118 @@ func deliveryInbox(actor *vocab.Actor) string {
 }
 
 // Follow asks the actor named by ref (an actor URL or a @user@host handle) to
-// accept local as a follower, and returns the target's actor URI. Remote
+// accept local as a follower, and returns the Follow. Its object is the
+// target's actor URI. Remote
 // targets get a signed Follow and stay pending until they send an Accept;
 // local targets are followed directly. Following again replaces the earlier
 // request.
-func (s *Server) Follow(ctx context.Context, local *store.Actor, ref string) (string, error) {
+func (s *Server) Follow(ctx context.Context, local *store.Actor, ref string) (*vocab.Activity, error) {
 	targetURI, err := s.resolveActorURI(ctx, ref)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if targetURI == local.ActorURI {
-		return "", errors.New("you can't follow yourself")
+		return nil, errors.New("you can't follow yourself")
 	}
 
 	var target *vocab.Actor
 	if username, ok := strings.CutPrefix(targetURI, s.baseURL+"/users/"); ok {
 		if _, err := s.store.GetByUsername(ctx, username); errors.Is(err, store.ErrNotFound) {
-			return "", fmt.Errorf("no local user %q", username)
+			return nil, fmt.Errorf("no local user %q", username)
 		} else if err != nil {
-			return "", err
+			return nil, err
 		}
 	} else {
 		if target, err = s.fetchActor(ctx, local, targetURI); err != nil {
-			return "", fmt.Errorf("fetch %s: %w", targetURI, err)
+			return nil, fmt.Errorf("fetch %s: %w", targetURI, err)
 		}
 		// The Accept will be signed by the actor's own id, so use that. It
 		// must be on the host we fetched it from.
 		fetched, _ := url.Parse(targetURI)
 		canonical, err := url.Parse(target.ID.String())
 		if err != nil || !strings.EqualFold(canonical.Host, fetched.Host) {
-			return "", fmt.Errorf("actor id %q is not on %s", target.ID, fetched.Host)
+			return nil, fmt.Errorf("actor id %q is not on %s", target.ID, fetched.Host)
 		}
 		if vocab.IsNil(target.Inbox) {
-			return "", fmt.Errorf("%s has no inbox", target.ID)
+			return nil, fmt.Errorf("%s has no inbox", target.ID)
 		}
 		targetURI = target.ID.String()
 		if err := s.putObject(ctx, target); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
 
 	if old, err := s.findFollow(ctx, local, targetURI); err == nil {
 		if err := s.dropFollow(ctx, local, old); err != nil {
-			return "", err
+			return nil, err
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
-		return "", err
+		return nil, err
 	}
 
 	follow := vocab.FollowNew(vocab.IRI(local.ActorURI+"#follows/"+rand.Text()), vocab.IRI(targetURI))
 	follow.Actor = vocab.IRI(local.ActorURI)
 	// Record it before sending, so a fast Accept finds it.
 	if err := s.store.CreateObject(ctx, follow); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := s.store.AddToCollection(ctx, followsID(local), follow.ID.String()); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if target == nil { // local: accepted immediately
 		if err := s.store.AddToCollection(ctx, targetURI+"/followers", local.ActorURI); err != nil {
-			return "", err
+			return nil, err
 		}
-		return targetURI, s.store.AddToCollection(ctx, FollowingURI(local), targetURI)
+		return follow, s.store.AddToCollection(ctx, FollowingURI(local), targetURI)
 	}
 
 	payload, err := marshal(follow)
 	if err != nil {
-		return "", fmt.Errorf("encode Follow: %w", err)
+		return nil, fmt.Errorf("encode Follow: %w", err)
 	}
 	if err := s.deliver(ctx, local, target.Inbox.GetLink().String(), payload); err != nil {
 		if dropErr := s.dropFollow(ctx, local, follow); dropErr != nil {
 			log.Printf("remove failed follow of %s: %v", targetURI, dropErr)
 		}
-		return "", fmt.Errorf("send Follow to %s: %w", target.Inbox.GetLink(), err)
+		return nil, fmt.Errorf("send Follow to %s: %w", target.Inbox.GetLink(), err)
 	}
-	return targetURI, nil
+	return follow, nil
 }
 
-// Unfollow stops local following targetURI, or returns ErrNotFound. Remote
-// targets are sent an Undo{Follow}; a failed delivery is logged, and the
-// follow is still removed.
-func (s *Server) Unfollow(ctx context.Context, local *store.Actor, targetURI string) error {
+// Unfollow stops local following targetURI and returns the Undo{Follow}, or
+// returns ErrNotFound. Remote targets are sent the Undo; a failed delivery is
+// logged, and the follow is still removed.
+func (s *Server) Unfollow(ctx context.Context, local *store.Actor, targetURI string) (*vocab.Activity, error) {
 	follow, err := s.findFollow(ctx, local, targetURI)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.dropFollow(ctx, local, follow); err != nil {
-		return err
+		return nil, err
 	}
+	undo := vocab.UndoNew(vocab.IRI(local.ActorURI+"#undos/"+rand.Text()), follow)
+	undo.Actor = vocab.IRI(local.ActorURI)
 
 	if strings.HasPrefix(targetURI, s.baseURL+"/users/") {
 		err := s.store.RemoveFromCollection(ctx, targetURI+"/followers", local.ActorURI)
-		if errors.Is(err, store.ErrNotFound) {
-			return nil
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
 		}
-		return err
+		return undo, nil
 	}
 
 	target, err := s.cachedActor(ctx, local, targetURI)
 	if err != nil {
 		log.Printf("send Undo{Follow} to %s: %v", targetURI, err)
-		return nil
+		return undo, nil
 	}
-	undo := vocab.UndoNew(vocab.IRI(local.ActorURI+"#undos/"+rand.Text()), follow)
-	undo.Actor = vocab.IRI(local.ActorURI)
 	payload, err := marshal(undo)
 	if err != nil {
-		return fmt.Errorf("encode Undo: %w", err)
+		return nil, fmt.Errorf("encode Undo: %w", err)
 	}
 	if err := s.deliver(ctx, local, target.Inbox.GetLink().String(), payload); err != nil {
 		log.Printf("send Undo{Follow} to %s: %v", targetURI, err)
 	}
-	return nil
+	return undo, nil
 }

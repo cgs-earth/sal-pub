@@ -6,10 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	vocab "github.com/go-ap/activitypub"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cgs-earth/sal-pub/internal/store"
+	"github.com/cgs-earth/sal-pub/pkg/util"
 )
 
 // These tests need Postgres (see crudServer). Notes are addressed only to the
@@ -34,7 +36,7 @@ func TestPublishNoteListsPublicNoteEverywhere(t *testing.T) {
 	assert.Equal(t, id, notes[0].ID)
 	assert.Equal(t, "<p>hello</p>", notes[0].Content)
 
-	in, err := s.store.CollectionContains(context.Background(), OutboxURI(a), s.noteID(id))
+	in, err := s.store.CollectionContains(context.Background(), OutboxURI(a), s.NoteURI(id))
 	require.NoError(t, err)
 	assert.True(t, in, "a public note should be in the outbox")
 
@@ -49,7 +51,7 @@ func TestPublishNoteKeepsNonPublicNoteOutOfOutbox(t *testing.T) {
 	s, a := crudServer(t), actorNamed("alice")
 	id := publish(t, s, a, "secret", []string{a.ActorURI})
 
-	in, err := s.store.CollectionContains(context.Background(), OutboxURI(a), s.noteID(id))
+	in, err := s.store.CollectionContains(context.Background(), OutboxURI(a), s.NoteURI(id))
 	require.NoError(t, err)
 	assert.False(t, in, "a non-public note must not be in the outbox")
 
@@ -60,11 +62,19 @@ func TestPublishNoteKeepsNonPublicNoteOutOfOutbox(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code, "GET /notes/{id}")
 }
 
-func TestEditNoteReplacesContent(t *testing.T) {
+// noteUpdate returns an Update-ready Note with id /notes/{id} and plain text.
+func noteUpdate(s *Server, id, text string) *vocab.Object {
+	note := vocab.ObjectNew(vocab.NoteType)
+	note.ID = vocab.IRI(s.NoteURI(id))
+	note.Source = vocab.Source{Content: vocab.DefaultNaturalLanguage(text), MediaType: "text/plain"}
+	return note
+}
+
+func TestUpdateNoteReplacesContent(t *testing.T) {
 	s, a := crudServer(t), actorNamed("alice")
 	id := publish(t, s, a, "old", []string{store.PublicAddress})
 
-	_, err := s.EditNote(context.Background(), a, id, "new")
+	_, err := s.updateObject(context.Background(), a, noteUpdate(s, id, "new"))
 	require.NoError(t, err)
 	notes, _, err := s.Notes(context.Background(), a, 20)
 	require.NoError(t, err)
@@ -73,23 +83,50 @@ func TestEditNoteReplacesContent(t *testing.T) {
 	assert.False(t, notes[0].Updated.IsZero(), "an edited note should have an updated time")
 }
 
-func TestEditNoteByOtherActorReturnsErrNotFound(t *testing.T) {
+func TestUpdateNoteKeepsAddressing(t *testing.T) {
+	s, a := crudServer(t), actorNamed("alice")
+	id := publish(t, s, a, "old", []string{store.PublicAddress})
+
+	note := noteUpdate(s, id, "new")
+	note.To = vocab.ItemCollection{vocab.IRI("https://other.example/u/eve")}
+	update, err := s.updateObject(context.Background(), a, note)
+	require.NoError(t, err)
+	assert.Equal(t, vocab.ItemCollection{vocab.PublicNS}, update.To)
+	notes, _, err := s.Notes(context.Background(), a, 20)
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	assert.Equal(t, []string{store.PublicAddress}, notes[0].To)
+}
+
+func TestUpdateNoteCannotChangeType(t *testing.T) {
+	s, a := crudServer(t), actorNamed("alice")
+	id := publish(t, s, a, "old", []string{store.PublicAddress})
+
+	article := noteUpdate(s, id, "new")
+	article.Type = vocab.ArticleType
+	_, err := s.updateObject(context.Background(), a, article)
+	assert.ErrorIs(t, err, util.ErrBadRequest)
+}
+
+func TestUpdateNoteByOtherActorIsForbidden(t *testing.T) {
 	s := crudServer(t)
 	id := publish(t, s, actorNamed("alice"), "mine", []string{store.PublicAddress})
-	_, err := s.EditNote(context.Background(), actorNamed("bob"), id, "theirs")
-	assert.ErrorIs(t, err, store.ErrNotFound)
+	_, err := s.updateObject(context.Background(), actorNamed("bob"), noteUpdate(s, id, "theirs"))
+	assert.ErrorIs(t, err, util.ErrForbidden)
 }
 
 func TestDeleteNoteRemovesItEverywhere(t *testing.T) {
 	s, a := crudServer(t), actorNamed("alice")
 	id := publish(t, s, a, "bye", []string{store.PublicAddress})
 
-	assert.ErrorIs(t, s.DeleteNote(context.Background(), actorNamed("bob"), id), store.ErrNotFound, "delete by other actor")
-	require.NoError(t, s.DeleteNote(context.Background(), a, id))
-	_, err := s.store.GetObject(context.Background(), s.noteID(id))
+	_, err := s.deleteObject(context.Background(), actorNamed("bob"), s.NoteURI(id))
+	assert.ErrorIs(t, err, util.ErrForbidden, "delete by other actor")
+	_, err = s.deleteObject(context.Background(), a, s.NoteURI(id))
+	require.NoError(t, err)
+	_, err = s.store.GetObject(context.Background(), s.NoteURI(id))
 	assert.ErrorIs(t, err, store.ErrNotFound, "GetObject after delete")
 	for _, c := range []string{notesID(a), OutboxURI(a), s.publicNotesID()} {
-		in, err := s.store.CollectionContains(context.Background(), c, s.noteID(id))
+		in, err := s.store.CollectionContains(context.Background(), c, s.NoteURI(id))
 		require.NoError(t, err)
 		assert.False(t, in, "deleted note still in %s", c)
 	}
