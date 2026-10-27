@@ -60,6 +60,7 @@ func (s *Server) ownObject(ctx context.Context, a *store.Actor, id string) (*voc
 // createObject stores obj under a new id, attributed to a.
 func (s *Server) createObject(ctx context.Context, a *store.Actor, obj *vocab.Object) error {
 	obj.ID = vocab.IRI(s.objectURI(rand.Text()))
+	setInteractionCollections(obj)
 	obj.AttributedTo = vocab.IRI(a.ActorURI)
 	obj.Published = time.Now().UTC().Truncate(time.Second)
 	obj.Updated = time.Time{}
@@ -88,6 +89,7 @@ func (s *Server) updateObject(ctx context.Context, a *store.Actor, obj *vocab.Ob
 		existing.Content = vocab.DefaultNaturalLanguage(textToHTML(text))
 		obj = existing
 	}
+	setInteractionCollections(obj)
 	obj.AttributedTo = existing.AttributedTo
 	obj.Published = existing.Published
 	obj.Updated = time.Now().UTC().Truncate(time.Second)
@@ -166,9 +168,7 @@ func (s *Server) ServeObject(w http.ResponseWriter, r *http.Request, viewer *sto
 		util.ServerError(w, fmt.Errorf("decode object: %w", err))
 		return
 	}
-	public := obj.To.Contains(vocab.PublicNS) || obj.CC.Contains(vocab.PublicNS)
-	isAuthor := viewer != nil && !vocab.IsNil(obj.AttributedTo) && obj.AttributedTo.GetLink().String() == viewer.ActorURI
-	if !public && !isAuthor {
+	if !canSee(obj, viewer) {
 		http.NotFound(w, r)
 		return
 	}

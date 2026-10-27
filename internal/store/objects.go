@@ -110,7 +110,7 @@ func encodeObject(it vocab.Item) (string, []byte, error) {
 }
 
 // CollectionContains reports whether itemID is in collectionID.
-func (s *Store) CollectionContains(ctx context.Context, collectionID, itemID string) (bool, error) {
+func (s *Store) CollectionContains(ctx context.Context, collectionID string, itemID string) (bool, error) {
 	var ok bool
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT EXISTS (SELECT 1 FROM collection_items WHERE collection_id = $1 AND item_id = $2)`,
@@ -119,6 +119,17 @@ func (s *Store) CollectionContains(ctx context.Context, collectionID, itemID str
 		return false, fmt.Errorf("check collection: %w", err)
 	}
 	return ok, nil
+}
+
+// CollectionCount returns the number of items in a collection.
+func (s *Store) CollectionCount(ctx context.Context, collectionID string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM collection_items WHERE collection_id = $1`, collectionID,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count collection: %w", err)
+	}
+	return n, nil
 }
 
 // CollectionItems iterates over the item ids in a collection, most recently

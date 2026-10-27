@@ -86,17 +86,18 @@ Fixed values that used to be variables:
 | `GET /` | Home page: log in, see your handle and followers, publish notes. Everyone, logged in or not, sees the 20 most recent public posts from all users. |
 | `GET /login`, `GET /oauth/callback` | Keycloak authorization-code flow with PKCE. |
 | `POST /logout` | Clears the session, then ends the Keycloak SSO session through its end-session endpoint and returns to `SALPUB_HOSTNAME`. |
-| `POST /notes` | Publishes a note. Form fields: `content`, `to`, `cc` (see [Addressing](#addressing)). Session-authenticated and protected against cross-origin posts. |
+| `POST /notes` | Publishes a note. Form fields: `content`, `to`, `cc` (see [Addressing](#addressing)), and optionally `in_reply_to`. Session-authenticated and protected against cross-origin posts. |
 | `GET /.well-known/webfinger?resource=acct:user@host` | WebFinger lookup. |
 | `GET /users/{username}` | Actor (`Person`) with its public key. |
 | `POST /follow`, `POST /unfollow` | Follow or unfollow the actor in form field `target` (see [Following](#following)). Session-authenticated and protected against cross-origin posts. |
-| `POST /users/{username}/inbox` | Accepts `Follow`, `Undo{Follow}`, `Accept`/`Reject` of the user's own follows, and `Create{Note}` (see [Inbox](#inbox)). Requires a valid HTTP Signature. |
+| `POST /users/{username}/inbox` | Accepts `Follow`, `Undo{Follow}`, `Accept`/`Reject` of the user's own follows, `Create{Note}`, and `Like`, `Announce` and their `Undo` (see [Inbox](#inbox) and [Likes, shares and replies](#likes-shares-and-replies)). Requires a valid HTTP Signature. |
 | `GET /users/{username}/outbox` | Latest 50 public `Create{Note}` activities. |
 | `POST /users/{username}/outbox` | Performs an activity as you (client-to-server; see [Posting to the outbox](#posting-to-the-outbox)). Session-authenticated and protected against cross-origin posts. |
 | `GET /users/{username}/followers`, `/following` | Collections. `following` lists accepted follows only. |
 | `GET /notes` | Latest 50 public notes from all users, as an `OrderedCollection` of `Note` objects. |
 | `GET /notes/{id}` | A single public note (404 for non-public notes). |
 | `POST /objects`, `GET/PUT/DELETE /objects/{id}` | CRUD for generic objects (see [Objects](#objects)). |
+| `GET /notes/{id}/likes`, `/shares`, `/replies` (and the same under `/objects/{id}`) | A note's or object's interactions (see [Likes, shares and replies](#likes-shares-and-replies)). |
 
 ## How it works
 
@@ -148,11 +149,11 @@ author's outbox (`<actor>/outbox`) and in the site-wide `<SALPUB_HOSTNAME>/notes
 
 ## Editing and deleting notes
 
-Each note in the **Outbox** tab has **Edit** and **Delete** buttons. They post an `Update` or
-`Delete` activity to your outbox (see [Posting to the outbox](#posting-to-the-outbox)), the same
+Each of your notes, in the **Outbox** tab and in reply threads, has an **Edit** button. It opens the
+Edit note dialog, which has **Save** and **Delete** buttons. They post an `Update` or `Delete` activity to your outbox (see [Posting to the outbox](#posting-to-the-outbox)), the same
 as any other client would. Only a note's author can change it.
 
-- **Edit** replaces the note's text. Its addressing stays the same. The note gets an `updated`
+- **Save** replaces the note's text. Its addressing stays the same. The note gets an `updated`
   time, it shows as *edited*, and an `Update{Note}` is sent to the same inboxes as the original
   `Create`.
 - **Delete** asks for confirmation, removes the note and sends a `Delete` with a `Tombstone` to the
@@ -241,6 +242,8 @@ the `Location` header.
 | `Delete` | Deletes one of your notes or objects, by id. The returned activity's object is a `Tombstone`. |
 | `Follow` | Follows the actor URL or `@user@host` handle in `object` (see [Following](#following)). |
 | `Undo{Follow}` | Unfollows. The object is either the `Follow`'s id or a `Follow` whose `object` is the actor. |
+| `Like`, `Announce` | Likes or shares (boosts) the object with the id in `object`, local or remote (see [Likes, shares and replies](#likes-shares-and-replies)). |
+| `Undo{Like}`, `Undo{Announce}` | Takes it back. The object is the activity's id or an activity of that type with the same `object`. |
 
 A bare object is treated as `Create{object}`. An `actor`, if given, must be you. Other activity types
 are rejected with `400`. Changing another user's note or object gives `403`.
@@ -250,8 +253,43 @@ with the HTML removed. Either way it's limited to 5000 characters and rendered b
 clients can't put their own HTML in a note.
 
 The home page's forms (`POST /notes`, `/follow` and `/unfollow`) build these activities and go
-through the same code. Its Edit and Delete buttons post `Update` and `Delete` activities to the
-outbox directly.
+through the same code. Its Edit note dialog's Save and Delete buttons post `Update` and `Delete`
+activities to the outbox directly.
+
+Public posts, your outbox and your inbox have Like and Reply buttons. Like posts a `Like`, or an
+`Undo{Like}` when you already like the post. Reply opens the New note dialog with `in_reply_to` set
+and the post's author added to CC. Local posts also show their like count and their public replies.
+Replies are only shown nested under the post they reply to, as a thread: a public reply to a post in
+the same list (the public posts, or your outbox) isn't listed on its own. Your replies to other
+people's posts stay in your outbox, with an "in reply to" link. Logged-out visitors see the counts
+and replies without the buttons.
+
+## Likes, shares and replies
+
+Every local note and object has three collections, linked from its `likes`, `shares` and `replies`
+properties:
+
+| Collection | Contents |
+|---|---|
+| `<object>/likes` | Actors who sent a `Like`. Served as a `Collection` with `totalItems` only, so who liked it isn't published. |
+| `<object>/shares` | Actors who sent an `Announce`, served the same way. |
+| `<object>/replies` | Ids of public notes with `inReplyTo` set to the object, as `items`. |
+
+They're served under the same rules as the object: non-public objects only to their author (and
+for `/notes/{id}/...`, not at all). Notes and objects created before this feature don't have the
+properties, but their collections still work.
+
+Local users like or share an object by posting `Like` or `Announce` to their outbox. Each user
+reacts to an object at most once; posting again returns the earlier activity. For a local object,
+the user is added to its collection. For a remote object, the server fetches it to find its author
+and delivers the activity to them. An `Announce` is addressed to the public and the user's
+followers as well, and only public objects can be shared. Remote servers' `Like`, `Announce` and
+`Undo` of them for local objects are counted from the inbox.
+
+A reply is a `Create{Note}` whose note has `inReplyTo`. A local parent must exist and be visible to
+you. The reply isn't addressed to the parent's author automatically: put them in `cc` so they
+receive it. Public replies to local objects, from local or remote users, are listed in the parent's
+`replies`. Deleting a local reply removes it from there.
 
 ## Federating with real servers
 
@@ -264,8 +302,11 @@ Keycloak. Then search for `@you@your-tunnel-host` from a Mastodon account.
 
 - Deliveries are sent once, with no retry queue.
 - Remote keys aren't cached, so every inbox request fetches the sender's actor.
-- The inbox ignores `Update`, `Delete`, `Announce` (boosts) and replies' context, so edited or
-  deleted remote posts stay as first received, and boosts aren't shown.
+- The inbox ignores `Update` and `Delete`, so edited or deleted remote posts stay as first
+  received, and deleted remote replies stay in `replies`. `Announce` only counts shares of local
+  objects; boosted posts aren't shown.
+- The home page has no Share button, and doesn't show share counts.
+- `Like` and `Announce` of a remote object fetch whatever URL the user gives (SSRF, as below).
 - Remote posts are shown as plain text; there is no HTML sanitizer yet.
 - Notes are only accepted at each user's own inbox; there is no shared inbox.
 - Like note recipients, follow targets are fetched from whatever a signed-in user enters (SSRF).

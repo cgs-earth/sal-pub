@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	vocab "github.com/go-ap/activitypub"
@@ -21,6 +22,10 @@ import (
 //   - Create{other object}: stored at /objects/{id}, not federated.
 //   - Update and Delete of the user's own notes and objects (objects.go).
 //   - Follow and Undo{Follow}.
+//   - Like and Announce of any object, and Undo of them (interactions.go).
+//
+// A Create{Note} may be inReplyTo another object, which must exist and be
+// visible to the user if it is local.
 //
 // A bare object is treated as Create{object}. The browser forms go through
 // the same code (PostOutbox).
@@ -107,7 +112,23 @@ func (s *Server) PostOutbox(ctx context.Context, a *store.Actor, it vocab.Item) 
 			if len(to) == 0 && len(cc) == 0 {
 				return nil, invalid("a note needs at least one recipient in to or cc")
 			}
-			note, err := s.PublishNote(ctx, a, text, to, cc)
+			var inReplyTo string
+			if !vocab.IsNil(obj.InReplyTo) {
+				inReplyTo = obj.InReplyTo.GetLink().String()
+				if u, err := url.Parse(inReplyTo); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+					return nil, invalid("inReplyTo must be an http(s) URL")
+				}
+				if s.isLocalObject(inReplyTo) {
+					it, err := s.store.GetObject(ctx, inReplyTo)
+					if err != nil && !errors.Is(err, store.ErrNotFound) {
+						return nil, err
+					}
+					if parent, perr := vocab.ToObject(it); err != nil || perr != nil || !canSee(parent, a) {
+						return nil, invalid("inReplyTo %s not found", inReplyTo)
+					}
+				}
+			}
+			note, err := s.PublishNote(ctx, a, text, to, cc, inReplyTo)
 			if err != nil {
 				return nil, err
 			}
@@ -147,28 +168,32 @@ func (s *Server) PostOutbox(ctx context.Context, a *store.Actor, it vocab.Item) 
 		}
 		return follow, nil
 
+	case act.Match(vocab.LikeType, vocab.AnnounceType):
+		return s.react(ctx, a, reactionType(act), act.Object.GetLink().String())
+
 	case act.Match(vocab.UndoType):
-		// The Follow to undo, by id or embedded with its target as object.
-		var target string
+		// The activity to undo, by id or embedded.
+		inner, err := vocab.ToActivity(act.Object)
 		if vocab.IsIRI(act.Object) {
-			follow, err := s.getFollow(ctx, act.Object.GetLink().String())
-			if errors.Is(err, store.ErrNotFound) {
-				return nil, err
-			} else if err != nil {
-				return nil, invalid("only Follows can be undone")
+			it, getErr := s.store.GetObject(ctx, act.Object.GetLink().String())
+			if getErr != nil {
+				return nil, getErr
 			}
-			if vocab.IsNil(follow.Actor) || follow.Actor.GetLink().String() != a.ActorURI {
-				return nil, fmt.Errorf("%w: not your Follow", util.ErrForbidden)
+			if inner, err = vocab.ToActivity(it); err == nil &&
+				(vocab.IsNil(inner.Actor) || inner.Actor.GetLink().String() != a.ActorURI) {
+				return nil, fmt.Errorf("%w: not your activity", util.ErrForbidden)
 			}
-			target = follow.Object.GetLink().String()
-		} else {
-			follow, err := vocab.ToActivity(act.Object)
-			if err != nil || !follow.Match(vocab.FollowType) || vocab.IsNil(follow.Object) {
-				return nil, invalid("only Follows can be undone")
-			}
-			target = follow.Object.GetLink().String()
 		}
-		return s.Unfollow(ctx, a, target)
+		if err != nil || vocab.IsNil(inner.Object) {
+			return nil, invalid("only Follow, Like and Announce can be undone")
+		}
+		switch {
+		case inner.Match(vocab.FollowType):
+			return s.Unfollow(ctx, a, inner.Object.GetLink().String())
+		case inner.Match(vocab.LikeType, vocab.AnnounceType):
+			return s.unreact(ctx, a, reactionType(inner), inner.Object.GetLink().String())
+		}
+		return nil, invalid("only Follow, Like and Announce can be undone")
 	}
 	return nil, invalid("%s is not supported", act.Type)
 }

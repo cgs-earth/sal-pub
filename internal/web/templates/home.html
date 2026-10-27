@@ -39,7 +39,12 @@
         <div class="meta"><a href="{{.AttributedTo}}">{{.AttributedTo}}</a></div>
         {{/* Remote HTML: plain text only, never noteHTML. */}}
         <div>{{plainText .Content}}</div>
-        <footer><a href="{{.ObjectID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a></footer>
+        <footer><a href="{{.ObjectID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a>
+          <span class="reactions">
+            <button type="button" class="small" data-like="{{.ObjectID}}" aria-pressed="{{index $.InboxLiked .ObjectID}}" title="Like">♥</button>
+            <button type="button" class="small" data-reply="{{.ObjectID}}" data-author="{{.AttributedTo}}">Reply</button>
+          </span>
+        </footer>
       </article>
     {{else}}
       <p class="empty">Nothing yet. Posts from accounts you follow, and posts addressed to you, show up here.</p>
@@ -51,14 +56,16 @@
       <article class="card">
         <div class="meta">to {{template "addresses" addresses .To $.DefaultCC}}
           {{with .CC}}· cc {{template "addresses" addresses . $.DefaultCC}}{{end}}</div>
+        {{template "in-reply-to" .}}
         <div>{{noteHTML .Content}}</div>
         <footer><a href="/notes/{{.ID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a>
           {{- if not .Updated.IsZero}} · <span title="{{.Updated.Format "2006-01-02 15:04 MST"}}">edited</span>{{end}}
           <span class="note-actions">
-            <button type="button" class="small" data-edit="{{.URI}}" data-text="{{plainText .Content}}">Edit</button>
-            <button type="button" class="small danger" data-delete="{{.URI}}">Delete</button>
+            {{template "reactions" .}}
+            {{template "edit-button" .}}
           </span>
         </footer>
+        {{template "replies" .}}
       </article>
     {{else}}
       <p class="empty">You haven't posted yet. Use <strong>New note</strong> to write one.</p>

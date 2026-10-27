@@ -28,12 +28,27 @@ tabs.forEach((t, i) => {
 addEventListener('hashchange', () => select(location.hash.slice(1)));
 select(location.hash.slice(1));
 
-// New note dialog.
+// New note dialog. Reply buttons open it as a reply to their object, with the
+// object's author added to CC so they receive it.
 const compose = document.getElementById('compose');
-document.getElementById('compose-open').addEventListener('click', () => compose.showModal());
+const composeCC = document.getElementById('compose-cc');
+const replyLine = document.getElementById('compose-reply');
+function openCompose(parent, author) {
+  compose.querySelector('[name=in_reply_to]').value = parent || '';
+  document.getElementById('compose-title').textContent = parent ? 'Reply' : 'New note';
+  replyLine.hidden = !parent;
+  replyLine.querySelector('a').href = parent || '';
+  replyLine.querySelector('a').textContent = parent || '';
+  composeCC.value = [author].filter(Boolean).join(' ');
+  compose.showModal();
+}
+document.getElementById('compose-open').addEventListener('click', () => openCompose());
+for (const b of document.querySelectorAll('[data-reply]')) {
+  b.addEventListener('click', () => openCompose(b.dataset.reply, b.dataset.author));
+}
 
-// Editing and deleting a note post an Update or Delete activity to the
-// user's outbox, then reload the page. Errors are shown in an alert.
+// Editing, deleting and liking post an activity to the user's outbox, then
+// reload the page. Errors are shown in an alert.
 const outbox = document.getElementById('notes').dataset.outbox;
 async function postActivity(activity) {
   const res = await fetch(outbox, {
@@ -70,10 +85,16 @@ editForm.addEventListener('submit', e => {
   });
 });
 
-for (const b of document.querySelectorAll('[data-delete]')) {
+document.getElementById('edit-delete').addEventListener('click', () => {
+  if (confirm("Delete this note? Its recipients' servers are asked to delete it too.")) {
+    postActivity({ type: 'Delete', object: editForm.dataset.note });
+  }
+});
+
+// Like buttons like their object, or undo the like when it is pressed.
+for (const b of document.querySelectorAll('[data-like]')) {
   b.addEventListener('click', () => {
-    if (confirm("Delete this note? Its recipients' servers are asked to delete it too.")) {
-      postActivity({ type: 'Delete', object: b.dataset.delete });
-    }
+    const like = { type: 'Like', object: b.dataset.like };
+    postActivity(b.getAttribute('aria-pressed') === 'true' ? { type: 'Undo', object: like } : like);
   });
 }

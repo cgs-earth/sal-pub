@@ -64,8 +64,8 @@ func TestPostOutboxRejectsOtherActor(t *testing.T) {
 }
 
 func TestPostOutboxRejectsUnsupportedActivity(t *testing.T) {
-	like := vocab.LikeNew("", vocab.IRI("https://remote.example/notes/1"))
-	_, err := noStoreServer(t).PostOutbox(context.Background(), testActor(), like)
+	block := vocab.ActivityNew("", vocab.BlockType, vocab.IRI("https://remote.example/users/bob"))
+	_, err := noStoreServer(t).PostOutbox(context.Background(), testActor(), block)
 	assert.ErrorIs(t, err, util.ErrBadRequest)
 }
 

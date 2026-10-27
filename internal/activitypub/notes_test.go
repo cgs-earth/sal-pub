@@ -20,7 +20,7 @@ import (
 // publish publishes a note as a and returns its {id}.
 func publish(t *testing.T, s *Server, a *store.Actor, text string, to []string) string {
 	t.Helper()
-	note, err := s.PublishNote(context.Background(), a, text, to, nil)
+	note, err := s.PublishNote(context.Background(), a, text, to, nil, "")
 	require.NoError(t, err)
 	return s.noteView(note).ID
 }
@@ -40,7 +40,7 @@ func TestPublishNoteListsPublicNoteEverywhere(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, in, "a public note should be in the outbox")
 
-	public, err := s.PublicNotes(context.Background(), 50)
+	public, err := s.PublicNotes(context.Background(), 50, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, public)
 	assert.Equal(t, id, public[0].ID)

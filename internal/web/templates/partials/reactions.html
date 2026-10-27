@@ -1,0 +1,51 @@
+{{/* Like and Reply buttons for a local note, or its like count when nobody is logged in. Expects a
+     Note. The buttons are wired up by static/app.js: Like posts a Like (or Undo) to the outbox, Reply
+     opens the New note dialog as a reply. */}}
+{{define "reactions"}}
+  <span class="reactions">
+    {{- if .CanReact}}
+      <button type="button" class="small" data-like="{{.URI}}" aria-pressed="{{.Liked}}" title="Like">♥ {{.LikeCount}}</button>
+      <button type="button" class="small" data-reply="{{.URI}}" data-author="{{.AttributedTo}}">Reply</button>
+    {{- else}}
+      <a href="{{.Likes}}" title="Likes">♥ {{.LikeCount}}</a>
+    {{- end}}
+  </span>
+{{end}}
+
+{{/* The object a note replies to, if any. Expects a Note. */}}
+{{define "in-reply-to"}}{{with .InReplyTo}}<div class="meta">in reply to <a href="{{.}}">{{.}}</a></div>{{end}}{{end}}
+
+{{/* The Edit button for one of the viewer's notes, which opens the Edit note dialog (edit.html).
+     Expects a Note. */}}
+{{define "edit-button"}}
+  <button type="button" class="small" data-edit="{{.URI}}" data-text="{{plainText .Content}}">Edit</button>
+{{- end}}
+
+{{/* A note's public replies, nested under it, oldest first, each with its own replies below it.
+     Local replies show their text and buttons; remote ones are links, since only their ids are
+     stored. Expects a Note. */}}
+{{define "replies"}}
+  {{- with .ReplyNotes}}
+    <div class="replies">
+      {{- range .}}
+        <div class="reply">
+          {{- if .Author}}
+            <div>{{noteHTML .Content}}</div>
+            <footer><a href="/notes/{{.ID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a>
+              ·
+              <div class="meta"><a href="{{.Author.ActorURI}}"><strong>{{or .Author.DisplayName .Author.Username .Author.ActorURI}}</strong></a></div>
+              {{- if not .Updated.IsZero}} · <span title="{{.Updated.Format "2006-01-02 15:04 MST"}}">edited</span>{{end}}
+              <span class="note-actions">
+                {{template "reactions" .}}
+                {{if .Mine}}{{template "edit-button" .}}{{end}}
+              </span>
+            </footer>
+            {{template "replies" .}}
+          {{- else}}
+            <a href="{{.URI}}">{{.URI}}</a>
+          {{- end}}
+        </div>
+      {{- end}}
+    </div>
+  {{- end}}
+{{end}}

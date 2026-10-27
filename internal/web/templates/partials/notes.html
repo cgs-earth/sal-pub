@@ -2,14 +2,19 @@
 {{define "public-notes"}}
   {{range .PublicNotes}}
     <article class="card">
+      {{template "in-reply-to" .}}
       <div>{{noteHTML .Content}}</div>
       <footer>
         <div class="meta">
           <a href="/notes/{{.ID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a>
-          - 
+          · 
           <a href="{{.Author.ActorURI}}"><strong>{{or .Author.DisplayName .Author.Username .Author.ActorURI}}</strong></a>
+          {{- if not .Updated.IsZero}} · <span title="{{.Updated.Format "2006-01-02 15:04 MST"}}">edited</span>{{end}}
         </div>
+        {{template "reactions" .}}
+        {{if .Mine}}{{template "edit-button" .}}{{end}}
       </footer>
+      {{template "replies" .}}
     </article>
   {{else}}
     <p class="empty">No public posts yet.</p>

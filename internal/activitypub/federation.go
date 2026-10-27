@@ -29,8 +29,8 @@ const (
 	acceptHeader    = `application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"`
 )
 
-// inbox accepts Follow, Undo{Follow}, Accept/Reject of our own Follows, and
-// Create{Note} from remote actors. Every request must carry a valid HTTP Signature from
+// inbox accepts Follow, Undo{Follow}, Accept/Reject of our own Follows,
+// Create{Note}, and Like, Announce and their Undo from remote actors. Every request must carry a valid HTTP Signature from
 // the actor named in the activity.
 func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 	local, ok := s.lookupActor(w, r, r.PathValue("username"))
@@ -78,18 +78,32 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("inbox %s: %s followed", local.Username, signer)
 
+	case act.Match(vocab.LikeType, vocab.AnnounceType):
+		err := s.countReaction(r.Context(), signer, act, true)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			util.ServerError(w, err)
+			return
+		}
+		log.Printf("inbox %s: %v of %v from %s", local.Username, act.Type, act.Object.GetLink(), signer)
+
 	case act.Match(vocab.UndoType):
-		// Only an embedded Follow by the same actor counts; a bare IRI could
+		// Only an embedded activity by the same actor counts; a bare IRI could
 		// point at anything.
 		inner, err := vocab.ToActivity(act.Object)
-		if err == nil && inner.Match(vocab.FollowType) &&
-			inner.Actor != nil && inner.Actor.GetLink().String() == signer {
-			err := s.store.RemoveFromCollection(r.Context(), FollowersURI(local), signer)
-			if err != nil && !errors.Is(err, store.ErrNotFound) {
-				util.ServerError(w, err)
-				return
-			}
+		if err != nil || inner.Actor == nil || inner.Actor.GetLink().String() != signer {
+			break
+		}
+		switch {
+		case inner.Match(vocab.FollowType):
+			err = s.store.RemoveFromCollection(r.Context(), FollowersURI(local), signer)
 			log.Printf("inbox %s: %s unfollowed", local.Username, signer)
+		case inner.Match(vocab.LikeType, vocab.AnnounceType):
+			err = s.countReaction(r.Context(), signer, inner, false)
+			log.Printf("inbox %s: %s undid %v of %v", local.Username, signer, inner.Type, inner.Object.GetLink())
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			util.ServerError(w, err)
+			return
 		}
 
 	case act.Match(vocab.AcceptType):
@@ -211,6 +225,9 @@ func (s *Server) receiveNote(ctx context.Context, local *store.Actor, signer str
 	if err := s.store.AddInboxNote(ctx, local.ID, store.InboxNote{
 		ObjectID: obj.ID.String(), AttributedTo: signer, Content: content, Published: published,
 	}); err != nil {
+		return err
+	}
+	if err := s.addReply(ctx, obj); err != nil {
 		return err
 	}
 	log.Printf("inbox %s: stored note %s from %s", local.Username, obj.ID, signer)

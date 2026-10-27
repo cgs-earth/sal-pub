@@ -61,6 +61,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /users/{username}/following", s.following)
 	mux.HandleFunc("GET /notes", s.publicNotes)
 	mux.HandleFunc("GET /notes/{id}", s.note)
+	mux.HandleFunc("GET /notes/{id}/{collection}", func(w http.ResponseWriter, r *http.Request) {
+		s.ServeInteractions(w, r, nil)
+	})
 }
 
 // Handle returns the fediverse handle for a username, e.g. @alice@example.org.

@@ -120,7 +120,8 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("POST /notes", csrf.Handler(a.requireActor(a.postNote)))
 	mux.HandleFunc("GET /users/{username}/inbox", a.readInbox)
 	mux.Handle("POST /users/{username}/outbox", csrf.Handler(a.requireActor(a.postOutbox)))
-	mux.HandleFunc("GET /objects/{id}", a.getObject)
+	mux.HandleFunc("GET /objects/{id}", a.withViewer(a.ap.ServeObject))
+	mux.HandleFunc("GET /objects/{id}/{collection}", a.withViewer(a.ap.ServeInteractions))
 	mux.Handle("POST /objects", csrf.Handler(a.requireActor(a.ap.ServeCreateObject)))
 	mux.Handle("PUT /objects/{id}", csrf.Handler(a.requireActor(a.ap.ServeUpdateObject)))
 	mux.Handle("DELETE /objects/{id}", csrf.Handler(a.requireActor(a.ap.ServeDeleteObject)))
@@ -149,7 +150,7 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicNotes, err := a.ap.PublicNotes(r.Context(), 20)
+	publicNotes, err := a.ap.PublicNotes(r.Context(), 20, actor)
 	if err != nil {
 		util.ServerError(w, err)
 		return
@@ -179,6 +180,14 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data["Inbox"] = inbox
+		inboxIDs := make([]string, len(inbox))
+		for i, n := range inbox {
+			inboxIDs[i] = n.ObjectID
+		}
+		if data["InboxLiked"], err = a.ap.Liked(r.Context(), actor, inboxIDs); err != nil {
+			util.ServerError(w, err)
+			return
+		}
 		data["Handle"] = a.ap.Handle(actor.Username)
 		data["Notes"] = notes
 		data["NoteCount"] = total
@@ -331,6 +340,9 @@ func (a *App) postNote(w http.ResponseWriter, r *http.Request, actor *store.Acto
 	for _, iri := range cc {
 		note.CC = append(note.CC, vocab.IRI(iri))
 	}
+	if parent := strings.TrimSpace(r.PostFormValue("in_reply_to")); parent != "" {
+		note.InReplyTo = vocab.IRI(parent)
+	}
 	a.post(w, r, actor, vocab.CreateNew("", note), "/#notes")
 }
 
@@ -351,14 +363,17 @@ func (a *App) requireActor(h func(http.ResponseWriter, *http.Request, *store.Act
 	})
 }
 
-// getObject serves /objects/{id}; non-public objects only to their author.
-func (a *App) getObject(w http.ResponseWriter, r *http.Request) {
-	actor, err := a.currentActor(r)
-	if err != nil {
-		util.ServerError(w, err)
-		return
+// withViewer runs h with the logged-in actor, or nil when not logged in. It is
+// for reads that show non-public objects only to their author.
+func (a *App) withViewer(h func(http.ResponseWriter, *http.Request, *store.Actor)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor, err := a.currentActor(r)
+		if err != nil {
+			util.ServerError(w, err)
+			return
+		}
+		h(w, r, actor)
 	}
-	a.ap.ServeObject(w, r, actor)
 }
 
 // readInbox lets a logged-in user read their own inbox. (POST to the same
