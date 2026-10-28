@@ -17,8 +17,11 @@ terraform {
   }
 
   # State holds generated secrets, so keep it in a private bucket:
-  #   tofu init -backend-config="bucket=<state bucket>" -backend-config="prefix=sal-pub"
-  backend "gcs" {}
+  #   tofu init -backend-config="bucket=terraform-state" -backend-config="prefix=sal-pub"
+  backend "gcs" {
+    bucket = "sal--terraform-state"
+    prefix = "sal-pub"
+  }
 }
 
 provider "google" {
