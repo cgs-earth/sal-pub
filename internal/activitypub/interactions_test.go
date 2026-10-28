@@ -186,7 +186,7 @@ func TestServeInteractionsHidesNonPublicObject(t *testing.T) {
 func TestPublishedNotePointsAtInteractionCollections(t *testing.T) {
 	s := crudServer(t)
 	id := publish(t, s, actorNamed("alice"), "hello", []string{store.PublicAddress})
-	it, err := s.store.GetObject(context.Background(), s.NoteURI(id))
+	it, err := s.loadObject(context.Background(), nil, s.NoteURI(id))
 	require.NoError(t, err)
 	note, err := vocab.ToObject(it)
 	require.NoError(t, err)
@@ -264,4 +264,31 @@ func TestReplyToOthersNoteStaysInOwnOutbox(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, notes, 1, "bob's reply isn't under one of his notes, so it is listed")
 	assert.Equal(t, s.NoteURI(id), notes[0].InReplyTo)
+}
+
+func TestReplyAddressesOfPublicNote(t *testing.T) {
+	s := crudServer(t)
+	alice := actorNamed("alice")
+	id := publish(t, s, alice, "question", []string{store.PublicAddress})
+	to, cc, err := s.ReplyAddresses(context.Background(), actorNamed("bob"), s.NoteURI(id))
+	require.NoError(t, err)
+	assert.Equal(t, []string{store.PublicAddress}, to)
+	assert.Equal(t, []string{alice.ActorURI}, cc)
+}
+
+func TestReplyAddressesOfNonPublicObjectOnlyReachAuthor(t *testing.T) {
+	s := crudServer(t)
+	alice := actorNamed("alice")
+	id := createNote(t, s, alice, `{"type":"Note","content":"private"}`)
+	to, cc, err := s.ReplyAddresses(context.Background(), alice, s.objectURI(id))
+	require.NoError(t, err)
+	assert.Equal(t, []string{alice.ActorURI}, to)
+	assert.Empty(t, cc)
+}
+
+func TestReplyAddressesOfInvisibleObjectIsNotFound(t *testing.T) {
+	s := crudServer(t)
+	id := createNote(t, s, actorNamed("alice"), `{"type":"Note","content":"private"}`)
+	_, _, err := s.ReplyAddresses(context.Background(), actorNamed("bob"), s.objectURI(id))
+	assert.ErrorIs(t, err, store.ErrNotFound)
 }

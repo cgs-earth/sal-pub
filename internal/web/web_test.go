@@ -129,14 +129,15 @@ func TestHomeOutboxNotesHaveLikeAndReply(t *testing.T) {
 	note.CanReact, note.LikeCount, note.AttributedTo = true, 3, "https://sal.example/users/alice"
 	out := render(t, data)
 	assert.Contains(t, out, `data-like="https://sal.example/notes/n1" aria-pressed="false" title="Like">♥ 3</button>`)
-	assert.Contains(t, out, `data-reply="https://sal.example/notes/n1" data-author="https://sal.example/users/alice"`)
+	assert.Contains(t, out, `data-reply="https://sal.example/notes/n1"`)
 	assert.Contains(t, out, `<input type="hidden" name="in_reply_to">`)
+	assert.Contains(t, out, `<fieldset id="compose-addresses">`, "the To and CC fields can be hidden for replies")
 }
 
 func TestHomeInboxNotesHaveLikeAndReply(t *testing.T) {
 	out := render(t, loggedInData())
 	assert.Contains(t, out, `data-like="https://r.example/n/1" aria-pressed="true"`, "a liked inbox note shows as pressed")
-	assert.Contains(t, out, `data-reply="https://r.example/n/1" data-author="https://r.example/u/bob"`)
+	assert.Contains(t, out, `data-reply="https://r.example/n/1">Reply</button>`)
 }
 
 func TestHomeLoggedOutShowsLikeCountWithoutButtons(t *testing.T) {

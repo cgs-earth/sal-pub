@@ -1,19 +1,22 @@
-{{/* The New note dialog, opened by #compose-open, and by Reply buttons with in_reply_to and the
-     replied-to author's CC filled in (static/app.js). Expects the page data. */}}
+{{/* The New note dialog, opened by #compose-open, and by Reply buttons with in_reply_to filled in
+     (static/app.js). A reply's addressing is set by the server, so the To and CC fields are
+     disabled and hidden for it. Expects the page data. */}}
 {{define "compose"}}
   <dialog id="compose" aria-labelledby="compose-title">
     <form method="post" action="/notes">
       <h2 id="compose-title">New note</h2>
       <input type="hidden" name="in_reply_to">
-      <p class="meta" id="compose-reply" hidden>Replying to <a></a></p>
+      <p class="meta" id="compose-reply" hidden>Replying to <a></a>.</p>
       <textarea name="content" rows="5" maxlength="{{.MaxNoteChars}}" aria-label="Note" placeholder="What's happening?" required autofocus></textarea>
-      <label for="compose-to">To</label>
-      <input type="text" id="compose-to" name="to" value="{{.DefaultTo}}">
-      <label for="compose-cc">CC</label>
-      <input type="text" id="compose-cc" name="cc" value="{{.DefaultCC}}">
-      <p class="meta">Actor or collection URLs, separated by spaces or commas. <code>public</code> is everyone;
-        your followers are <code>{{.DefaultCC}}</code>. Notes not addressed to <code>public</code> only reach
-        their recipients.</p>
+      <fieldset id="compose-addresses">
+        <label for="compose-to">To</label>
+        <input type="text" id="compose-to" name="to" value="{{.DefaultTo}}">
+        <label for="compose-cc">CC</label>
+        <input type="text" id="compose-cc" name="cc" value="{{.DefaultCC}}">
+        <p class="meta">Actor or collection URLs, separated by spaces or commas. <code>public</code> is everyone;
+          your followers are <code>{{.DefaultCC}}</code>. Notes not addressed to <code>public</code> only reach
+          their recipients.</p>
+      </fieldset>
       <div class="actions">
         <button type="submit" formmethod="dialog" formnovalidate>Cancel</button>
         <button type="submit" class="primary">Publish</button>

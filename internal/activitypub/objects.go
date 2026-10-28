@@ -40,6 +40,39 @@ func decodeObject(w http.ResponseWriter, r *http.Request) (*vocab.Object, error)
 	return vocab.ToObject(it)
 }
 
+// loadObject returns the object id as a sees it: a local object from the
+// store, which must be visible to a (or it returns ErrNotFound), or a remote
+// one fetched signed as a.
+func (s *Server) loadObject(ctx context.Context, a *store.Actor, id string) (*vocab.Object, error) {
+	if s.isLocalObject(id) {
+		it, err := s.store.GetObject(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		obj, err := vocab.ToObject(it)
+		if err != nil {
+			return nil, fmt.Errorf("decode object: %w", err)
+		}
+		if !canSee(obj, a) {
+			return nil, store.ErrNotFound
+		}
+		return obj, nil
+	}
+	body, err := s.fetch(ctx, a, id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", util.ErrBadGateway, err)
+	}
+	it, err := vocab.UnmarshalJSON(body)
+	var obj *vocab.Object
+	if err == nil {
+		obj, err = vocab.ToObject(it)
+	}
+	if err != nil || obj.ID.String() != id {
+		return nil, fmt.Errorf("%w: %s is not an object", util.ErrBadGateway, id)
+	}
+	return obj, nil
+}
+
 // ownObject loads the object id and checks that a is its author. It returns
 // store.ErrNotFound or util.ErrForbidden if not.
 func (s *Server) ownObject(ctx context.Context, a *store.Actor, id string) (*vocab.Object, error) {
@@ -155,7 +188,7 @@ func (s *Server) deleteObject(ctx context.Context, a *store.Actor, id string) (*
 
 // ServeObject writes /objects/{id}. viewer is the logged-in actor, or nil.
 func (s *Server) ServeObject(w http.ResponseWriter, r *http.Request, viewer *store.Actor) {
-	it, err := s.store.GetObject(r.Context(), s.objectURI(r.PathValue("id")))
+	it, err := s.loadObject(r.Context(), viewer, s.objectURI(r.PathValue("id")))
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return

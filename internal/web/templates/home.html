@@ -42,7 +42,7 @@
         <footer><a href="{{.ObjectID}}"><time datetime="{{.Published.Format "2006-01-02T15:04:05Z07:00"}}">{{.Published.Format "2006-01-02 15:04 MST"}}</time></a>
           <span class="reactions">
             <button type="button" class="small" data-like="{{.ObjectID}}" aria-pressed="{{index $.InboxLiked .ObjectID}}" title="Like">♥</button>
-            <button type="button" class="small" data-reply="{{.ObjectID}}" data-author="{{.AttributedTo}}">Reply</button>
+            <button type="button" class="small" data-reply="{{.ObjectID}}">Reply</button>
           </span>
         </footer>
       </article>

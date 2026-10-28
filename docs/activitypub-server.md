@@ -258,7 +258,9 @@ activities to the outbox directly.
 
 Public posts, your outbox and your inbox have Like and Reply buttons. Like posts a `Like`, or an
 `Undo{Like}` when you already like the post. Reply opens the New note dialog with `in_reply_to` set
-and the post's author added to CC. Local posts also show their like count and their public replies.
+and no To or CC fields: the server addresses the reply to the public with the post's author in CC if
+the post is public, and otherwise to its author only. `POST /notes` ignores `to` and `cc` when
+`in_reply_to` is given. Local posts also show their like count and their public replies.
 Replies are only shown nested under the post they reply to, as a thread: a public reply to a post in
 the same list (the public posts, or your outbox) isn't listed on its own. Your replies to other
 people's posts stay in your outbox, with an "in reply to" link. Logged-out visitors see the counts

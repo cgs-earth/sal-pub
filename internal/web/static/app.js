@@ -28,23 +28,24 @@ tabs.forEach((t, i) => {
 addEventListener('hashchange', () => select(location.hash.slice(1)));
 select(location.hash.slice(1));
 
-// New note dialog. Reply buttons open it as a reply to their object, with the
-// object's author added to CC so they receive it.
+// New note dialog. Reply buttons open it as a reply to their object. The
+// server addresses replies, so the To and CC fields are disabled (and so not
+// submitted) and hidden for them.
 const compose = document.getElementById('compose');
-const composeCC = document.getElementById('compose-cc');
+const addresses = document.getElementById('compose-addresses');
 const replyLine = document.getElementById('compose-reply');
-function openCompose(parent, author) {
+function openCompose(parent) {
   compose.querySelector('[name=in_reply_to]').value = parent || '';
   document.getElementById('compose-title').textContent = parent ? 'Reply' : 'New note';
   replyLine.hidden = !parent;
   replyLine.querySelector('a').href = parent || '';
   replyLine.querySelector('a').textContent = parent || '';
-  composeCC.value = [author].filter(Boolean).join(' ');
+  addresses.hidden = addresses.disabled = Boolean(parent);
   compose.showModal();
 }
 document.getElementById('compose-open').addEventListener('click', () => openCompose());
 for (const b of document.querySelectorAll('[data-reply]')) {
-  b.addEventListener('click', () => openCompose(b.dataset.reply, b.dataset.author));
+  b.addEventListener('click', () => openCompose(b.dataset.reply));
 }
 
 // Editing, deleting and liking post an activity to the user's outbox, then

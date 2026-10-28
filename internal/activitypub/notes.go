@@ -184,7 +184,7 @@ func (s *Server) addInteractions(ctx context.Context, n *Note, viewer *store.Act
 		}
 		reply := Note{URI: id}
 		if strings.HasPrefix(id, s.NoteURI("")) {
-			it, err := s.store.GetObject(ctx, id)
+			it, err := s.loadObject(ctx, viewer, id)
 			if err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
 			}

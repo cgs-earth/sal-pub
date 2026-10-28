@@ -69,6 +69,24 @@ func reactionID(a *store.Actor, typ vocab.ActivityVocabularyType, objectID strin
 	return vocab.IRI(a.ActorURI + "#" + reactionCollections[typ] + "/" + hex.EncodeToString(sum[:16]))
 }
 
+// ReplyAddresses returns the to and cc addresses of a's reply to parent, so
+// they don't depend on what the user enters: to the public with the parent's
+// author in cc if the parent is public, and otherwise to its author only.
+func (s *Server) ReplyAddresses(ctx context.Context, a *store.Actor, parent string) (to, cc []string, err error) {
+	obj, err := s.loadObject(ctx, a, parent)
+	if err != nil {
+		return nil, nil, err
+	}
+	if vocab.IsNil(obj.AttributedTo) {
+		return nil, nil, invalid("%s has no author to reply to", parent)
+	}
+	author := obj.AttributedTo.GetLink().String()
+	if !isPublic(obj) {
+		return []string{author}, nil, nil
+	}
+	return []string{store.PublicAddress}, []string{author}, nil
+}
+
 // react performs a's Like or Announce (typ) of objectID and returns the
 // activity. A local object counts it in its likes or shares collection, and
 // the author of a remote object is sent it. An Announce is addressed to the
@@ -83,30 +101,9 @@ func (s *Server) react(ctx context.Context, a *store.Actor, typ vocab.ActivityVo
 	}
 
 	local := s.isLocalObject(objectID)
-	var obj *vocab.Object
-	if local {
-		it, err := s.store.GetObject(ctx, objectID)
-		if err != nil {
-			return nil, err
-		}
-		if obj, err = vocab.ToObject(it); err != nil {
-			return nil, fmt.Errorf("decode object: %w", err)
-		}
-		if !canSee(obj, a) {
-			return nil, store.ErrNotFound
-		}
-	} else {
-		body, err := s.fetch(ctx, a, objectID)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", util.ErrBadGateway, err)
-		}
-		it, err := vocab.UnmarshalJSON(body)
-		if err == nil {
-			obj, err = vocab.ToObject(it)
-		}
-		if err != nil || obj.ID.String() != objectID {
-			return nil, fmt.Errorf("%w: %s is not an object", util.ErrBadGateway, objectID)
-		}
+	obj, err := s.loadObject(ctx, a, objectID)
+	if err != nil {
+		return nil, err
 	}
 	if typ == vocab.AnnounceType && !isPublic(obj) {
 		return nil, invalid("only public objects can be shared")
@@ -228,7 +225,7 @@ func (s *Server) ServeInteractions(w http.ResponseWriter, r *http.Request, viewe
 		return
 	}
 	collectionID := s.baseURL + r.URL.Path
-	it, err := s.store.GetObject(r.Context(), strings.TrimSuffix(collectionID, "/"+name))
+	it, err := s.loadObject(r.Context(), viewer, strings.TrimSuffix(collectionID, "/"+name))
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return

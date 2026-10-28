@@ -319,15 +319,24 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, actor *store.Actor, a
 
 // postNote publishes a note from form fields "content", "to" and "cc".
 func (a *App) postNote(w http.ResponseWriter, r *http.Request, actor *store.Actor) {
-	to, err := activitypub.ParseAddresses(r.PostFormValue("to"))
-	if err != nil {
-		http.Error(w, "To: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	cc, err := activitypub.ParseAddresses(r.PostFormValue("cc"))
-	if err != nil {
-		http.Error(w, "CC: "+err.Error(), http.StatusBadRequest)
-		return
+	// A reply's addressing is set by the server; the to and cc fields are ignored.
+	var to, cc []string
+	var err error
+	parent := strings.TrimSpace(r.PostFormValue("in_reply_to"))
+	if parent != "" {
+		if to, cc, err = a.ap.ReplyAddresses(r.Context(), actor, parent); err != nil {
+			util.ServerError(w, err)
+			return
+		}
+	} else {
+		if to, err = activitypub.ParseAddresses(r.PostFormValue("to")); err != nil {
+			http.Error(w, "To: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if cc, err = activitypub.ParseAddresses(r.PostFormValue("cc")); err != nil {
+			http.Error(w, "CC: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	note := vocab.ObjectNew(vocab.NoteType)
 	note.Source = vocab.Source{
@@ -340,7 +349,7 @@ func (a *App) postNote(w http.ResponseWriter, r *http.Request, actor *store.Acto
 	for _, iri := range cc {
 		note.CC = append(note.CC, vocab.IRI(iri))
 	}
-	if parent := strings.TrimSpace(r.PostFormValue("in_reply_to")); parent != "" {
+	if parent != "" {
 		note.InReplyTo = vocab.IRI(parent)
 	}
 	a.post(w, r, actor, vocab.CreateNew("", note), "/#notes")

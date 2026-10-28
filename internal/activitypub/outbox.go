@@ -2,7 +2,6 @@ package activitypub
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -118,14 +117,9 @@ func (s *Server) PostOutbox(ctx context.Context, a *store.Actor, it vocab.Item) 
 				if u, err := url.Parse(inReplyTo); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 					return nil, invalid("inReplyTo must be an http(s) URL")
 				}
-				if s.isLocalObject(inReplyTo) {
-					it, err := s.store.GetObject(ctx, inReplyTo)
-					if err != nil && !errors.Is(err, store.ErrNotFound) {
-						return nil, err
-					}
-					if parent, perr := vocab.ToObject(it); err != nil || perr != nil || !canSee(parent, a) {
-						return nil, invalid("inReplyTo %s not found", inReplyTo)
-					}
+				it, err := s.loadObject(ctx, a, inReplyTo)
+				if parent, perr := vocab.ToObject(it); err != nil || perr != nil || !canSee(parent, a) {
+					return nil, invalid("inReplyTo %s not found", inReplyTo)
 				}
 			}
 			note, err := s.PublishNote(ctx, a, text, to, cc, inReplyTo)
